@@ -1,0 +1,22 @@
+[project]
+name = "nepali-narration-video"
+version = "0.1.0"
+description = "Create Nepali narration videos from audio + stock clip with auto subtitles (SRT)."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name="Your Name"}]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "srt>=3.5.3",
+    "ffmpeg-python>=0.2.0",
+    "faster-whisper>=1.0.3",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+]
+
+[project.scripts]
+nepali-video = "nepali_video.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

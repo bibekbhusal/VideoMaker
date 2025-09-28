@@ -1,0 +1,2 @@
+[console_scripts]
+nepali-video = nepali_video.cli:app

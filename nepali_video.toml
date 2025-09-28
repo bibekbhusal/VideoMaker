@@ -1,0 +1,28 @@
+[transcribe]
+out = "subs.srt"
+model = "Systran/faster-whisper-large-v3"
+device = "auto"
+compute_type = "float32"
+language = "ne"
+vad_filter = true
+beam_size = 8
+# Leave best_of unset to rely on beam search
+temperature = 0.0
+initial_prompt = "यो नेपाली कविता हो। सबै वाक्यहरू शुद्ध नेपालीमा लेख्नुहोस्। उच्चारण र लय जस्ताको तस्तै राख्नुहोस्।"
+condition_on_previous_text = false
+word_timestamps = true
+max_line_chars = 48
+max_line_words = 12
+min_line_words = 2
+max_line_duration = 5.0
+max_gap = 0.8
+cpu_threads = 8
+num_workers = 4
+chunk_length = 30
+
+[build_video]
+out = "output.mp4"
+burn = false
+soft = true
+font_size = 28
+font_file = ""
