@@ -7,7 +7,6 @@
 - Introduced `--subtitle-language` so embedded subtitles carry accurate metadata across languages.
 - Added centralized logging configuration (`--log-level`) and FFmpeg log-level integration for consistent checkpoint output.
 - Externalised the Whisper initial prompt to `prompts/initial_prompt.txt`, added `--initial-prompt-file`, and updated default temperature guidance (0.2).
-- Added an MMS ASR backend (`--backend mms`) using Meta's `facebook/mms-1b-nep` checkpoint for higher-quality Nepali/Hindi transcription.
 
 ## 2025-09-28
 - Added automatic slideshow builder for image directories with alphabetical or random ordering.

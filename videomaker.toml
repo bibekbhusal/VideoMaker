@@ -2,7 +2,6 @@
 log_level = "WARN"
 
 [transcribe]
-backend = "whisper"
 model = "Systran/faster-whisper-large-v3"
 device = "auto"
 compute_type = "float32"

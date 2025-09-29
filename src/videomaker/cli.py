@@ -11,7 +11,6 @@ from rich.table import Table
 from .audio import denoise_audio
 from .config import get_default
 from .fonts import ensure_default_font
-from .mms import transcribe_mms_to_srt
 from .stt import transcribe_to_srt
 from .utils import set_ffmpeg_log_level
 from .video import (
@@ -159,16 +158,10 @@ def transcribe(
         "--out",
         help="Output SRT path",
     ),
-    backend: str = typer.Option(
-        get_default("transcribe", "backend", "whisper"),
-        "--backend",
-        help="ASR backend: whisper | mms",
-        show_default=True,
-    ),
     model: str = typer.Option(
         get_default("transcribe", "model", "Systran/faster-whisper-large-v3"),
         "--model",
-        help="Model identifier (Whisper CTranslate2 or MMS)",
+        help="Whisper model name (CTranslate2)",
     ),
     device: str = typer.Option(
         get_default("transcribe", "device", "auto"),
@@ -308,10 +301,6 @@ def transcribe(
 ):
     """Transcribe narration audio to SRT subtitles."""
 
-    backend_normalized = backend.lower()
-    if backend_normalized not in {"whisper", "mms"}:
-        raise typer.BadParameter("--backend must be either 'whisper' or 'mms'")
-
     audio_path = _resolve_existing(
         audio,
         expect_dir=False,
@@ -368,9 +357,6 @@ def transcribe(
             initial_prompt_file,
             len(prompt_text),
         )
-    if backend_normalized == "mms" and prompt_text:
-        logger.warning("Initial prompt parameters are ignored when using the MMS backend")
-
     if vad_filter:
         if vad_threshold is not None:
             logger.info("VAD threshold set to %.3f", vad_threshold)
@@ -378,52 +364,39 @@ def transcribe(
             logger.info("VAD minimum silence %d ms", vad_min_silence_ms)
 
     try:
-        if backend_normalized == "mms":
-            logger.info("Using MMS backend with model %s", model)
-            srt_path, rtf = transcribe_mms_to_srt(
-                audio_path=str(narration_path),
-                out_srt=str(out_path),
-                model_id=model,
-                device=device,
-                max_line_words=max_line_words,
-                min_line_words=min_line_words,
-                max_line_duration=max_line_duration,
-                max_gap=max_gap,
-            )
-        else:
-            logger.info(
-                "Loading Whisper model %s (device=%s, compute_type=%s)",
-                model,
-                device,
-                compute_type,
-            )
-            srt_path, rtf = transcribe_to_srt(
-                audio_path=str(narration_path),
-                out_srt=str(out_path),
-                model_name=model,
-                device=device,
-                compute_type=compute_type,
-                language=language_arg,
-                vad_filter=vad_filter,
-                vad_threshold=vad_threshold,
-                vad_min_silence_ms=vad_min_silence_ms,
-                beam_size=beam_size,
-                best_of=best_of,
-                temperature=temperature,
-                initial_prompt=prompt_text,
-                condition_on_previous_text=condition_on_previous_text,
-                word_timestamps=word_timestamps,
-                max_line_words=max_line_words,
-                max_line_duration=max_line_duration,
-                max_gap=max_gap,
-                min_line_words=min_line_words,
-                cpu_threads=cpu_threads,
-                num_workers=num_workers,
-                chunk_length=chunk_length,
-                compression_ratio_threshold=compression_ratio_threshold,
-                log_prob_threshold=log_prob_threshold,
-                no_speech_threshold=no_speech_threshold,
-            )
+        logger.info(
+            "Loading Whisper model %s (device=%s, compute_type=%s)",
+            model,
+            device,
+            compute_type,
+        )
+        srt_path, rtf = transcribe_to_srt(
+            audio_path=str(narration_path),
+            out_srt=str(out_path),
+            model_name=model,
+            device=device,
+            compute_type=compute_type,
+            language=language_arg,
+            vad_filter=vad_filter,
+            vad_threshold=vad_threshold,
+            vad_min_silence_ms=vad_min_silence_ms,
+            beam_size=beam_size,
+            best_of=best_of,
+            temperature=temperature,
+            initial_prompt=prompt_text,
+            condition_on_previous_text=condition_on_previous_text,
+            word_timestamps=word_timestamps,
+            max_line_words=max_line_words,
+            max_line_duration=max_line_duration,
+            max_gap=max_gap,
+            min_line_words=min_line_words,
+            cpu_threads=cpu_threads,
+            num_workers=num_workers,
+            chunk_length=chunk_length,
+            compression_ratio_threshold=compression_ratio_threshold,
+            log_prob_threshold=log_prob_threshold,
+            no_speech_threshold=no_speech_threshold,
+        )
     finally:
         if cleanup_audio:
             narration_path.unlink(missing_ok=True)
