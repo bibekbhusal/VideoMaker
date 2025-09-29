@@ -159,6 +159,7 @@ chunk_length = 30
 initial_prompt_file = "prompts/initial_prompt.txt"
 
 [build_video]
+image_config = ""
 burn = "force"
 subtitle_language = "und"
 font_size = 40
