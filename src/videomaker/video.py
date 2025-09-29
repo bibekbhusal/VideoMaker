@@ -1,30 +1,14 @@
 import logging
 import os
 import random
-import re
 import subprocess
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from .image_timings import natural_key
 from .utils import ffmpeg_log_level, ffprobe_duration, require_ffmpeg, safe
 
 logger = logging.getLogger(__name__)
-
-_NUM_RE = re.compile(r"(\d+)")
-
-
-def _natural_key(value: str) -> list[tuple[int, object]]:
-    parts = _NUM_RE.split(value)
-    key: list[tuple[int, object]] = []
-    for part in parts:
-        if not part:
-            continue
-        if part.isdigit():
-            key.append((0, int(part)))
-        else:
-            key.append((1, part.lower()))
-    return key
-
 
 def _subtitles_filter(subs_path: str, font_size: int, font_file: str = "") -> str:
     """Build a subtitles filter string with optional font directory/name overrides."""
@@ -54,11 +38,13 @@ def _validate_ordered_paths(paths: Iterable[str], order: str, seed: int | None =
         raise ValueError("Provide at least one media path.")
 
     order_key = order.lower()
-    if order_key not in {"alphabetical", "random"}:
+    if order_key not in {"alphabetical", "random", "manual"}:
         raise ValueError("order must be either 'alphabetical' or 'random'")
 
+    if order_key == "manual":
+        return list(paths)
     if order_key == "alphabetical":
-        items.sort(key=lambda p: _natural_key(Path(p).name))
+        items.sort(key=lambda p: natural_key(Path(p).name))
     else:
         rnd = random.Random(seed)
         rnd.shuffle(items)
@@ -272,18 +258,20 @@ def build_slideshow_from_images(
 
     require_ffmpeg()
 
-    if image_durations is not None and len(image_durations) != len(image_paths):
-        raise ValueError("image_durations must match the number of images")
-    if image_durations is None and image_duration <= 0:
-        raise ValueError("image_duration must be positive")
-
-    ordered = _validate_ordered_paths(image_paths, order, seed=seed)
-    base_durations = (
-        image_durations if image_durations is not None else [image_duration] * len(ordered)
-    )
-    for dur in base_durations:
-        if dur <= 0:
-            raise ValueError("Image durations must be positive")
+    manual = image_durations is not None
+    if manual:
+        if len(image_durations) != len(image_paths):
+            raise ValueError("image_durations must match the number of images")
+        for dur in image_durations:
+            if dur <= 0:
+                raise ValueError("Image durations must be positive")
+        ordered = list(image_paths)
+        base_durations = image_durations
+    else:
+        if image_duration <= 0:
+            raise ValueError("image_duration must be positive")
+        ordered = _validate_ordered_paths(image_paths, order, seed=seed)
+        base_durations = [image_duration] * len(ordered)
 
     adur = ffprobe_duration(audio_path)
     logger.info(
@@ -291,16 +279,21 @@ def build_slideshow_from_images(
         len(ordered),
         order,
     )
-    total = 0.0
-    seq: list[tuple[str, float]] = []
-    idx = 0
-    safety = adur + 1.0
-    while total < safety:
-        base_idx = idx % len(ordered)
-        dur = base_durations[base_idx]
-        seq.append((ordered[base_idx], dur))
-        total += dur
-        idx += 1
+
+    if manual:
+        seq = list(zip(ordered, base_durations))
+        total = sum(base_durations)
+    else:
+        total = 0.0
+        seq: list[tuple[str, float]] = []
+        idx = 0
+        safety = adur + 1.0
+        while total < safety and ordered:
+            base_idx = idx % len(ordered)
+            dur = base_durations[base_idx]
+            seq.append((ordered[base_idx], dur))
+            total += dur
+            idx += 1
 
     cmd = ["ffmpeg", "-loglevel", ffmpeg_log_level(), "-y"]
     for path, dur in seq:

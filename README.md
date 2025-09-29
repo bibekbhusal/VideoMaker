@@ -109,23 +109,28 @@ If you omit `--image-duration`, VideoMaker divides the narration length evenly a
 Per-image timing configuration example (`durations.json`):
 
 ```json
-{
-  "img01.jpg": [0, 4.5],
-  "img02.jpg": [4.5, 10.5],
-  "closing.png": [10.5, 18]
-}
+[
+  { "file": "img01.jpg", "start": 0.0, "end": 4.5 },
+  { "file": "img02.jpg", "start": 4.5, "end": 10.5 },
+  { "file": "closing.png", "start": 10.5, "end": 18.0 }
+]
 ```
 
-Any images not listed fall back to `--image-duration` (if provided) or the automatic even split.
+Entries are applied in order; any image not listed falls back to `--image-duration` (if provided) or the automatic even split. Discovery uses natural alphabetical sorting (e.g. `img2.jpg` before `img10.jpg`).
 
 Generate a starter file:
 
 ```bash
 scripts/init-image-config.sh audio/Saas.m4a media/photos/Saas
 videomaker init-image-config audio/Saas.m4a media/photos/Saas
+videomaker set-image-start \
+  --audio audio/Saas.m4a \
+  --images-dir media/photos/Saas \
+  --start-image img10.jpg \
+  --start-timestamp 12
 ```
 
-This produces `media/photos/Saas/image_config.json` with sequential five-second windows you can edit.
+`init-image-config` produces `media/photos/Saas/image_config.json` with sequential windows you can edit. `set-image-start` lets you pin a specific still to a timestamp and splits the remaining narration evenly among later images.
 
 ### Voice Activity Detection tips
 

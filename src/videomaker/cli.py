@@ -14,6 +14,12 @@ from rich.table import Table
 from .audio import denoise_audio
 from .config import get_default
 from .fonts import ensure_default_font
+from .image_config import (
+    build_anchor_schedule,
+    parse_image_config_payload,
+    serialise_schedule,
+)
+from .image_timings import calculate_image_durations, sort_image_paths
 from .stt import transcribe_to_srt
 from .utils import ffprobe_duration, set_ffmpeg_log_level
 from .video import (
@@ -540,7 +546,7 @@ def build_video(
         logger.info("Discovered %d clip(s)", len(clips))
 
     image_inputs: List[str] = []
-    image_config_data: Optional[dict[str, Tuple[float, float]]] = None
+    image_config_data: Optional[Dict[str, Tuple[float, float]]] = None
     if images_dir:
         image_directory = _resolve_existing(
             images_dir,
@@ -549,35 +555,63 @@ def build_video(
             description="Image directory",
         )
         logger.info("Using image directory %s", image_directory)
-        image_inputs = _collect_media_files(image_directory, _IMAGE_EXTS)
-        if not image_inputs:
+        raw_images = _collect_media_files(image_directory, _IMAGE_EXTS)
+        if not raw_images:
             raise typer.BadParameter(f"No image files found in {image_directory}")
+        try:
+            image_inputs = sort_image_paths(raw_images, image_order.lower(), image_seed)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
         logger.info("Discovered %d image(s)", len(image_inputs))
         if image_config:
             try:
                 payload = json.loads(image_config.read_text(encoding="utf-8"))
             except Exception as exc:  # pragma: no cover - file errors
                 raise typer.BadParameter(f"Failed to read image config: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise typer.BadParameter(
-                    "Image config must be a JSON object mapping filename to seconds"
+            try:
+                config_entries = parse_image_config_payload(payload)
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+
+            image_config_data = {
+                name: (start, end) for name, start, end in config_entries if end > start
+            }
+
+            if image_inputs:
+                by_name: Dict[str, List[str]] = {}
+                for path in image_inputs:
+                    name = pathlib.Path(path).name
+                    by_name.setdefault(name, []).append(path)
+
+                duplicates = [name for name, paths in by_name.items() if len(paths) > 1]
+                if duplicates:
+                    joined = ", ".join(sorted(duplicates))
+                    raise typer.BadParameter(
+                        f"Duplicate filenames detected when applying image config: {joined}"
+                    )
+
+                ordered_inputs: List[str] = []
+                missing: List[str] = []
+                used = set()
+                for name, *_ in config_entries:
+                    if name not in by_name:
+                        missing.append(name)
+                        continue
+                    ordered_inputs.append(by_name[name][0])
+                    used.add(name)
+
+                if missing:
+                    raise typer.BadParameter(
+                        "Image config references files not found in images directory: "
+                        + ", ".join(missing)
+                    )
+
+                remaining = [path for path in image_inputs if pathlib.Path(path).name not in used]
+                image_inputs = ordered_inputs + remaining
+                logger.info(
+                    "Ordering %d image(s) according to image config", len(ordered_inputs)
                 )
-            image_config_data = {}
-            for key, value in payload.items():
-                if not isinstance(value, (list, tuple)) or len(value) != 2:
-                    raise typer.BadParameter(
-                        f"Image config entry for {key!r} must be a [start, end] list"
-                    )
-                try:
-                    start = float(value[0])
-                    end = float(value[1])
-                except (TypeError, ValueError) as exc:
-                    raise typer.BadParameter(f"Invalid timestamps for {key!r}: {value}") from exc
-                if end <= start:
-                    raise typer.BadParameter(
-                        f"End timestamp must be greater than start for {key!r}"
-                    )
-                image_config_data[key] = (start, end)
+
             logger.info("Loaded image timing config for %d file(s)", len(image_config_data))
 
     if clips and image_inputs:
@@ -597,62 +631,20 @@ def build_video(
         description="Audio file",
     )
     logger.debug("Resolved audio path %s", audio_path)
+    audio_seconds = ffprobe_duration(str(audio_path))
 
     if image_inputs:
-        if image_duration is not None and image_duration <= 0:
-            raise typer.BadParameter("--image-duration must be positive")
-
-        filtered_images: List[str] = []
-        durations: List[float] = []
-        needs_default = image_duration is None
-        audio_seconds = ffprobe_duration(str(audio_path)) if needs_default else None
-        auto_duration = None
-        if needs_default and audio_seconds is not None:
-            auto_duration = max(audio_seconds / len(image_inputs), 0.5)
-
-        for path in image_inputs:
-            base = pathlib.Path(path).name
-            if image_config_data and base in image_config_data:
-                start, end = image_config_data[base]
-                configured = end - start
-                if configured <= 0:
-                    logger.warning(
-                        "Skipping %s due to non-positive configured duration (%.2fs)",
-                        base,
-                        configured,
-                    )
-                    continue
-                filtered_images.append(path)
-                durations.append(configured)
-                logger.info(
-                    "Using configured window %.2f–%.2fs (%s)",
-                    start,
-                    end,
-                    base,
-                )
-                continue
-
-            if image_duration is not None:
-                filtered_images.append(path)
-                durations.append(image_duration)
-                continue
-
-            assert auto_duration is not None
-            filtered_images.append(path)
-            durations.append(auto_duration)
-            logger.info(
-                "Auto image duration %.2fs based on %d image(s) and %.2fs narration",
-                auto_duration,
-                len(image_inputs),
+        try:
+            image_inputs, image_duration_list, log_events = calculate_image_durations(
+                image_inputs,
                 audio_seconds,
+                image_config_data,
+                image_duration,
             )
-
-        image_inputs = filtered_images
-        if not image_inputs:
-            raise typer.BadParameter(
-                "No valid images remain after applying --image-config"
-            )
-        image_duration_list = durations
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        for level, message in log_events:
+            getattr(logger, level)(message)
     else:
         image_duration_list = None
 
@@ -716,17 +708,17 @@ def build_video(
 
     try:
         if image_inputs:
-            order = image_order.lower()
             try:
                 sample_duration = (
                     image_duration
                     if image_duration is not None
                     else (image_duration_list[0] if image_duration_list else 0.0)
                 )
+                slideshow_order = "manual" if image_config_data else image_order.lower()
                 logger.info(
                     "Rendering slideshow (%d images, order=%s, ~%.2fs each)",
                     len(image_inputs),
-                    order,
+                    slideshow_order,
                     sample_duration,
                 )
                 final = build_slideshow_from_images(
@@ -734,7 +726,7 @@ def build_video(
                     narration_path,
                     str(subs),
                     str(out_path),
-                    order=order,
+                    order=slideshow_order,
                     seed=image_seed,
                     image_duration=(
                         image_duration if image_duration is not None else sample_duration
@@ -831,15 +823,15 @@ def init_image_config(
         ordered = images[:]
         random.shuffle(ordered)
 
-    config: Dict[str, List[float]] = {}
+    entries: List[Tuple[str, float, float]] = []
     current = 0.0
     for path in ordered:
         name = pathlib.Path(path).name
         if current >= duration:
-            config[name] = [-1.0, -1.0]
+            entries.append((name, -1.0, -1.0))
             continue
         end = min(duration, current + base_duration)
-        config[name] = [round(current, 3), round(end, 3)]
+        entries.append((name, current, end))
         current = end
 
     if out is None:
@@ -848,8 +840,145 @@ def init_image_config(
         out_path = out.expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    out_path.write_text(json.dumps(config, indent=2, ensure_ascii=False))
-    typer.echo(f"Wrote {len(config)} entries to {out_path}")
+    out_path.write_text(json.dumps(serialise_schedule(entries), indent=2, ensure_ascii=False))
+    typer.echo(f"Wrote {len(entries)} entries to {out_path}")
+
+
+@app.command("set-image-start")
+def set_image_start(
+    audio: pathlib.Path = typer.Option(
+        ...,
+        "--audio",
+        "-a",
+        help="Path to narration audio (searched in default audio directories if relative)",
+    ),
+    images_dir: pathlib.Path = typer.Option(
+        ...,
+        "--images-dir",
+        "-i",
+        help="Directory containing the images",
+    ),
+    start_image: str = typer.Option(
+        ...,
+        "--start-image",
+        "-s",
+        help="Filename of the image to anchor",
+    ),
+    start_timestamp: float = typer.Option(
+        ...,
+        "--start-timestamp",
+        "-t",
+        help="When the start image should appear (seconds)",
+    ),
+    out: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path (defaults to <images_dir>/image_config.json)",
+    ),
+    order: str = typer.Option(
+        "alphabetical",
+        "--image-order",
+        help="Ordering used when assigning windows",
+        show_default=True,
+    ),
+) -> None:
+    """Rewrite image timings so a chosen image starts at a specific timestamp."""
+
+    if start_timestamp < 0:
+        raise typer.BadParameter("Start timestamp must be non-negative")
+
+    audio_path = _resolve_existing(
+        audio,
+        expect_dir=False,
+        search_roots=_AUDIO_SEARCH_DIRS,
+        description="Audio file",
+    )
+
+    directory = images_dir.expanduser().resolve()
+    if not directory.is_dir():
+        raise typer.BadParameter(f"{directory} is not a directory")
+
+    raw_images = _collect_media_files(directory, _IMAGE_EXTS)
+    if not raw_images:
+        raise typer.BadParameter(f"No images found in {directory}")
+
+    order_key = order.lower()
+    if order_key != "alphabetical":
+        raise typer.BadParameter(
+            "set-image-start currently supports only alphabetical ordering"
+        )
+
+    ordered_images = sort_image_paths(raw_images, "alphabetical")
+
+    image_names = [pathlib.Path(p).name for p in ordered_images]
+    target_name = pathlib.Path(start_image).name
+
+    if target_name not in image_names:
+        raise typer.BadParameter(
+            f"Image {target_name!r} not found in {directory}. Available: {', '.join(image_names)}"
+        )
+
+    out_path = (directory / "image_config.json") if out is None else out.expanduser().resolve()
+    if out is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_entries: List[Tuple[str, float, float]] = []
+    if out_path.exists():
+        try:
+            payload = json.loads(out_path.read_text(encoding="utf-8"))
+            existing_entries = parse_image_config_payload(payload)
+        except FileNotFoundError:
+            existing_entries = []
+        except ValueError as exc:
+            raise typer.BadParameter(f"Invalid existing image config: {exc}") from exc
+        except Exception as exc:  # pragma: no cover - file errors
+            raise typer.BadParameter(f"Failed to read existing image config: {exc}") from exc
+
+    audio_seconds = ffprobe_duration(str(audio_path))
+    if start_timestamp >= audio_seconds:
+        raise typer.BadParameter(
+            f"Start timestamp {start_timestamp:.3f}s must be less than audio duration {audio_seconds:.3f}s"
+        )
+
+    existing_lookup = {name: (start, end) for name, start, end in existing_entries}
+
+    anchor_index = image_names.index(target_name)
+    prefix_names = image_names[:anchor_index]
+
+    final_schedule: List[Tuple[str, float, float]] = []
+    current = 0.0
+    for idx, name in enumerate(prefix_names):
+        if name in existing_lookup:
+            start, end = existing_lookup[name]
+            final_schedule.append((name, start, end))
+            current = max(current, end)
+            continue
+
+        remaining_slots = len(prefix_names) - idx
+        remaining_time = max(start_timestamp - current, 0.0)
+        segment = remaining_time / remaining_slots if remaining_slots else 0.0
+        end = start_timestamp if idx == len(prefix_names) - 1 else current + segment
+        final_schedule.append((name, current, end))
+        current = end
+
+    try:
+        tail_schedule = build_anchor_schedule(
+            image_names,
+            audio_seconds,
+            target_name,
+            start_timestamp,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    final_schedule.extend(tail_schedule)
+
+    serialised = serialise_schedule(final_schedule)
+
+    out_path.write_text(json.dumps(serialised, indent=2, ensure_ascii=False))
+    typer.echo(
+        f"Updated {out_path} with {len(serialised)} entries. Anchor {target_name!r} starts at {start_timestamp:.3f}s"
+    )
 
 
 if __name__ == "__main__":

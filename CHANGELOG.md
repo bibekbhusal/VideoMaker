@@ -1,5 +1,11 @@
 # Changelog
 
+## 2025-09-30
+- Added `videomaker set-image-start` for anchoring still images at a specific timestamp while redistributing the remaining narration automatically.
+- Reworked `image_config.json` to use an ordered JSON array so slideshow order follows the config file exactly.
+- Taught `build-video` to respect the config ordering, fall back gracefully when entries are missing, and keep untouched images ahead of the anchor.
+- Extracted image scheduling helpers into `src/videomaker/image_config.py` for reuse across CLI commands.
+
 ## 2025-09-29
 - Renamed the project to **VideoMaker**, updated CLI entry point, and adopted `videomaker.toml` for configuration.
 - Added RNNoise cleaning to the transcription workflow with `--clean-audio/--no-clean-audio` toggles and custom model support.
