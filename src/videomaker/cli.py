@@ -12,7 +12,7 @@ from .audio import denoise_audio
 from .config import get_default
 from .fonts import ensure_default_font
 from .stt import transcribe_to_srt
-from .utils import set_ffmpeg_log_level
+from .utils import ffprobe_duration, set_ffmpeg_log_level
 from .video import (
     build_slideshow_from_images,
     build_video_playlist,
@@ -53,6 +53,7 @@ _ASSET_SEARCH_DIRS: Sequence[pathlib.Path] = (
     pathlib.Path("media"),
     pathlib.Path("media/videos"),
     pathlib.Path("media/images"),
+    pathlib.Path("media/photos"),
     pathlib.Path("media/clips"),
     pathlib.Path("clips"),
 )
@@ -428,11 +429,11 @@ def build_video(
         help="Order to cycle still images: alphabetical or random",
         show_default=True,
     ),
-    image_duration: float = typer.Option(
-        float(get_default("build_video", "image_duration", 5.0)),
+    image_duration: Optional[float] = typer.Option(
+        None,
         "--image-duration",
         min=0.2,
-        help="Seconds each image is shown before advancing",
+        help="Seconds each image is shown before advancing (auto if omitted)",
     ),
     image_seed: Optional[int] = typer.Option(
         None,
@@ -531,8 +532,24 @@ def build_video(
             "Provide at least one --clips-dir or --images-dir with media files."
         )
 
-    if image_inputs and image_duration <= 0:
-        raise typer.BadParameter("--image-duration must be positive")
+    if image_inputs:
+        if image_duration is not None and image_duration <= 0:
+            raise typer.BadParameter("--image-duration must be positive")
+        if image_duration is None:
+            audio_seconds = ffprobe_duration(str(audio))
+            image_duration = max(audio_seconds / len(image_inputs), 0.5)
+            logger.info(
+                "Auto image duration %.2fs based on %d image(s) and %.2fs narration",
+                image_duration,
+                len(image_inputs),
+                audio_seconds,
+            )
+        else:
+            logger.info(
+                "Using image duration %.2fs for %d image(s)",
+                image_duration,
+                len(image_inputs),
+            )
 
     audio_path = _resolve_existing(
         audio,

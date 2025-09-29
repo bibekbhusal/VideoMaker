@@ -42,7 +42,8 @@ project/
 ├── audio/              # narration sources (e.g. Saas.m4a)
 ├── media/
 │   ├── clips/          # mp4/mov clips for looping
-│   └── slides/         # jpg/png stills for slideshows
+│   ├── slides/         # jpg/png stills for slideshows
+│   └── photos/         # alternate folder auto-discovered for images
 ├── subs/               # optional subtitle exports
 └── videomaker.toml   # optional defaults
 ```
@@ -101,6 +102,8 @@ Key flags:
 - `--temperature` – tweak decoder creativity (defaults to 0.2).
 - `--image-order` (`alphabetical`/`random`) & `--image-seed` – control slideshow sequencing.
 - `--log-level` – change runtime logging (DEBUG, INFO, WARN, …).
+
+If you omit `--image-duration`, VideoMaker divides the narration length evenly across every image discovered in the directory, so each still is shown for the same number of seconds.
 
 ### Voice Activity Detection tips
 
