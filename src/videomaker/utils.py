@@ -1,5 +1,5 @@
-
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -8,23 +8,50 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
+_FFMPEG_LOG_LEVEL = "warning"
+
+
+def set_ffmpeg_log_level(level: str) -> None:
+    """Set the log level used for FFmpeg/ffprobe commands."""
+
+    global _FFMPEG_LOG_LEVEL
+    _FFMPEG_LOG_LEVEL = level
+
+
+def ffmpeg_log_level() -> str:
+    """Return the configured FFmpeg log level string."""
+
+    return _FFMPEG_LOG_LEVEL
+
 
 def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
+
 
 def require_ffmpeg():
     if not which("ffmpeg") or not which("ffprobe"):
         raise RuntimeError("FFmpeg/ffprobe not found. Install with Homebrew: brew install ffmpeg")
 
+
 def ffprobe_duration(path: str) -> float:
     require_ffmpeg()
     cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "json", path
+        "ffprobe",
+        "-loglevel",
+        ffmpeg_log_level(),
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        path,
     ]
+    logger.debug("Running ffprobe: %s", " ".join(cmd))
     out = subprocess.check_output(cmd)
     data = json.loads(out.decode("utf-8"))
     return float(data["format"]["duration"])
+
 
 def safe(path: str) -> str:
     # Quote for ffmpeg command

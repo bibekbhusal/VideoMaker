@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 
-from .utils import cache_dir, download_file, require_ffmpeg, safe
+from .utils import cache_dir, download_file, ffmpeg_log_level, require_ffmpeg, safe
+
+logger = logging.getLogger(__name__)
 
 RNNOISE_MODEL_SOURCES = (
     # Attempt a Hugging Face mirror first (may be unavailable in the future).
@@ -33,11 +36,13 @@ def ensure_rnnoise_model(model_path: Optional[str] = None) -> str:
     cache = cache_dir()
     target = cache / "rnnoise-model-2018-08-28.rnnn"
     if target.is_file():
+        logger.debug("Using cached RNNoise model at %s", target)
         return str(target)
 
     last_error: Optional[Exception] = None
     for _, url in RNNOISE_MODEL_SOURCES:
         try:
+            logger.info("Downloading RNNoise model from %s", url)
             download_file(url, target)
             return str(target)
         except (HTTPError, URLError, TimeoutError) as exc:
@@ -71,6 +76,8 @@ def denoise_audio(
 
     cmd = [
         "ffmpeg",
+        "-loglevel",
+        ffmpeg_log_level(),
         "-y",
         "-i",
         audio_path,
@@ -80,5 +87,6 @@ def denoise_audio(
         "pcm_s16le" if Path(output_path).suffix.lower() in {".wav", ".wave"} else "aac",
         output_path,
     ]
+    logger.info("Invoking ffmpeg noise suppression -> %s", output_path)
     subprocess.check_call(cmd)
     return output_path

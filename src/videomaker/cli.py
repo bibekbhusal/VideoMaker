@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import List, Optional, Sequence
 
@@ -11,6 +12,7 @@ from .audio import denoise_audio
 from .config import get_default
 from .fonts import ensure_default_font
 from .stt import transcribe_to_srt
+from .utils import set_ffmpeg_log_level
 from .video import (
     build_slideshow_from_images,
     build_video_playlist,
@@ -18,6 +20,26 @@ from .video import (
 )
 
 app = typer.Typer(pretty_exceptions_show_locals=False, add_completion=False)
+logger = logging.getLogger(__name__)
+
+
+_PY_LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARN": logging.WARNING,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+
+_FFMPEG_LEVELS = {
+    "CRITICAL": "fatal",
+    "ERROR": "error",
+    "WARN": "warning",
+    "WARNING": "warning",
+    "INFO": "info",
+    "DEBUG": "verbose",
+}
 
 
 _AUDIO_SEARCH_DIRS: Sequence[pathlib.Path] = (
@@ -37,6 +59,39 @@ _ASSET_SEARCH_DIRS: Sequence[pathlib.Path] = (
 
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".webm")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def _configure_logging(level: str) -> None:
+    normalized = level.upper()
+    py_level = _PY_LOG_LEVELS.get(normalized)
+    if py_level is None:
+        raise ValueError(
+            f"Unsupported log level '{level}'. Choose from {', '.join(sorted(_PY_LOG_LEVELS))}."
+        )
+
+    logging.basicConfig(
+        level=py_level,
+        format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+        force=True,
+    )
+    set_ffmpeg_log_level(_FFMPEG_LEVELS.get(normalized, "warning"))
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
+@app.callback()
+def main(
+    log_level: Optional[str] = typer.Option(
+        None,
+        "--log-level",
+        help="Logging level (DEBUG, INFO, WARN, ERROR, CRITICAL). Defaults to config/global.",
+    )
+) -> None:
+    configured = log_level or str(get_default("global", "log_level", "WARN"))
+    try:
+        _configure_logging(configured)
+    except ValueError as exc:  # pragma: no cover - CLI validation
+        raise typer.BadParameter(str(exc)) from exc
+    logger.debug("Logging configured at %s", configured.upper())
 
 
 def _dedupe(paths: Sequence[pathlib.Path]) -> List[pathlib.Path]:
@@ -127,6 +182,16 @@ def transcribe(
         get_default("transcribe", "vad_filter", True),
         "--vad/--no-vad",
         help="Enable VAD filtering",
+    ),
+    vad_threshold: Optional[float] = typer.Option(
+        get_default("transcribe", "vad_threshold", None),
+        "--vad-threshold",
+        help="Adjust VAD detection threshold (lower keeps quieter speech)",
+    ),
+    vad_min_silence_ms: Optional[int] = typer.Option(
+        get_default("transcribe", "vad_min_silence_ms", None),
+        "--vad-min-silence-ms",
+        help="Minimum silence duration (ms) before closing a segment",
     ),
     beam_size: Optional[int] = typer.Option(
         get_default("transcribe", "beam_size", 5),
@@ -229,6 +294,7 @@ def transcribe(
         search_roots=_AUDIO_SEARCH_DIRS,
         description="Audio file",
     )
+    logger.info("Starting transcription for %s", audio_path)
 
     configured_out = get_default("transcribe", "out", "")
     if out is not None:
@@ -237,11 +303,16 @@ def transcribe(
         out_path = pathlib.Path(configured_out)
     else:
         out_path = audio_path.with_suffix(".srt")
+    logger.debug("Output subtitle path set to %s", out_path)
 
     narration_path = audio_path
     cleanup_audio = False
     if clean_audio:
         model_path = str(rnnoise_model) if rnnoise_model else None
+        logger.info(
+            "Running RNNoise denoising%s",
+            " with custom model" if model_path else "",
+        )
         try:
             cleaned_path = denoise_audio(str(audio_path), model_path=model_path)
         except FileNotFoundError as exc:
@@ -254,8 +325,25 @@ def transcribe(
         lang_value = language.strip()
         if lang_value and lang_value.lower() != "auto":
             language_arg = lang_value
+            logger.info("Language hint set to '%s'", language_arg)
+        else:
+            logger.info("Language auto-detection enabled")
+    else:
+        logger.info("Language auto-detection enabled")
+
+    if vad_filter:
+        if vad_threshold is not None:
+            logger.info("VAD threshold set to %.3f", vad_threshold)
+        if vad_min_silence_ms is not None:
+            logger.info("VAD minimum silence %d ms", vad_min_silence_ms)
 
     try:
+        logger.info(
+            "Loading Whisper model %s (device=%s, compute_type=%s)",
+            model,
+            device,
+            compute_type,
+        )
         srt_path, rtf = transcribe_to_srt(
             audio_path=str(narration_path),
             out_srt=str(out_path),
@@ -264,6 +352,8 @@ def transcribe(
             compute_type=compute_type,
             language=language_arg,
             vad_filter=vad_filter,
+            vad_threshold=vad_threshold,
+            vad_min_silence_ms=vad_min_silence_ms,
             beam_size=beam_size,
             best_of=best_of,
             temperature=temperature,
@@ -284,7 +374,9 @@ def transcribe(
     finally:
         if cleanup_audio:
             narration_path.unlink(missing_ok=True)
+            logger.debug("Removed temporary denoised file %s", narration_path)
 
+    logger.info("Transcription complete -> %s", srt_path)
     table = Table(title="Transcription complete", show_header=False, box=box.SIMPLE)
     table.add_row("SRT file", str(srt_path))
     if rtf and rtf > 0:
@@ -374,6 +466,7 @@ def build_video(
 ):
     """Loop clips or images to cover the narration, mux audio, and add subtitles."""
 
+    logger.info("Building video for audio %s", audio)
     clips: List[str] = []
     if clips_dir:
         clip_directory = _resolve_existing(
@@ -382,9 +475,11 @@ def build_video(
             search_roots=_ASSET_SEARCH_DIRS,
             description="Video directory",
         )
+        logger.info("Using clip directory %s", clip_directory)
         clips = _collect_media_files(clip_directory, _VIDEO_EXTS)
         if not clips:
             raise typer.BadParameter(f"No video files found in {clip_directory}")
+        logger.info("Discovered %d clip(s)", len(clips))
 
     image_inputs: List[str] = []
     if images_dir:
@@ -394,9 +489,11 @@ def build_video(
             search_roots=_ASSET_SEARCH_DIRS,
             description="Image directory",
         )
+        logger.info("Using image directory %s", image_directory)
         image_inputs = _collect_media_files(image_directory, _IMAGE_EXTS)
         if not image_inputs:
             raise typer.BadParameter(f"No image files found in {image_directory}")
+        logger.info("Discovered %d image(s)", len(image_inputs))
 
     if clips and image_inputs:
         raise typer.BadParameter(
@@ -417,6 +514,7 @@ def build_video(
         search_roots=_AUDIO_SEARCH_DIRS,
         description="Audio file",
     )
+    logger.debug("Resolved audio path %s", audio_path)
 
     mode = (burn or "force").strip().lower()
     if mode not in {"force", "soft"}:
@@ -425,6 +523,11 @@ def build_video(
     soft_subtitles = mode == "soft"
 
     subtitle_language = subtitle_language.strip().lower() or "und"
+    logger.info(
+        "Subtitle mode: %s (language tag %s)",
+        "burn" if burn_subtitles else "soft",
+        subtitle_language,
+    )
 
     configured_out = get_default("build_video", "out", "")
     if out is not None:
@@ -475,6 +578,12 @@ def build_video(
         if image_inputs:
             order = image_order.lower()
             try:
+                logger.info(
+                    "Rendering slideshow (%d images, order=%s, duration=%.2fs)",
+                    len(image_inputs),
+                    order,
+                    image_duration,
+                )
                 final = build_slideshow_from_images(
                     image_inputs,
                     narration_path,
@@ -495,6 +604,7 @@ def build_video(
             font_arg = str(font_path) if font_path else ""
             try:
                 if len(clips) == 1:
+                    logger.info("Rendering looped single clip")
                     final = loop_and_build_video(
                         clips[0],
                         narration_path,
@@ -507,6 +617,7 @@ def build_video(
                         subtitle_language=subtitle_language,
                     )
                 else:
+                    logger.info("Rendering playlist with %d clips", len(clips))
                     final = build_video_playlist(
                         clips,
                         narration_path,
@@ -524,6 +635,7 @@ def build_video(
         if cleanup_audio:
             pathlib.Path(narration_path).unlink(missing_ok=True)
 
+    logger.info("Video render complete -> %s", final)
     print(f"[bold green]Done:[/bold green] {final}")
 
 

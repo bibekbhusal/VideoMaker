@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Tuple
 
 import srt
 from faster_whisper import WhisperModel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -142,6 +145,8 @@ def transcribe_to_srt(
     compute_type: str = "int8",
     language: Optional[str] = "ne",
     vad_filter: bool = True,
+    vad_threshold: Optional[float] = None,
+    vad_min_silence_ms: Optional[int] = None,
     beam_size: Optional[int] = None,
     best_of: Optional[int] = None,
     temperature: Optional[float] = None,
@@ -167,6 +172,12 @@ def transcribe_to_srt(
     if num_workers < 1:
         num_workers = 1
 
+    logger.info(
+        "Initialising Whisper model %s (device=%s, compute_type=%s)",
+        model_name,
+        device,
+        compute_type,
+    )
     model = WhisperModel(
         model_name,
         device=device,
@@ -181,6 +192,15 @@ def transcribe_to_srt(
         condition_on_previous_text=condition_on_previous_text,
         word_timestamps=word_timestamps,
     )
+
+    if vad_filter:
+        vad_params = {}
+        if vad_threshold is not None:
+            vad_params["threshold"] = vad_threshold
+        if vad_min_silence_ms is not None:
+            vad_params["min_silence_duration_ms"] = vad_min_silence_ms
+        if vad_params:
+            kwargs["vad_parameters"] = vad_params
 
     if beam_size:
         kwargs["beam_size"] = beam_size
@@ -199,6 +219,7 @@ def transcribe_to_srt(
     if no_speech_threshold is not None:
         kwargs["no_speech_threshold"] = no_speech_threshold
 
+    logger.info("Transcribing audio %s", audio_path)
     segments, info = model.transcribe(audio_path, **kwargs)
 
     segs = _format_segments(segments, keep_words=word_timestamps)
@@ -212,9 +233,11 @@ def transcribe_to_srt(
             min_words=min_line_words,
         )
 
+    logger.info("Formatting %d subtitle segments", len(segs))
     srt_text = to_srt(segs)
     with open(out_srt, "w", encoding="utf-8") as fh:
         fh.write(srt_text)
+    logger.debug("Subtitle file written to %s", out_srt)
 
     dur = getattr(info, "duration", None)
     speed = getattr(info, "transcription_speed", None)

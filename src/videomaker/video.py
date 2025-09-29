@@ -1,11 +1,13 @@
-
+import logging
 import os
 import random
 import subprocess
 from pathlib import Path
 from typing import Iterable, List
 
-from .utils import ffprobe_duration, require_ffmpeg, safe
+from .utils import ffmpeg_log_level, ffprobe_duration, require_ffmpeg, safe
+
+logger = logging.getLogger(__name__)
 
 
 def _subtitles_filter(subs_path: str, font_size: int, font_file: str = "") -> str:
@@ -20,7 +22,6 @@ def _subtitles_filter(subs_path: str, font_size: int, font_file: str = "") -> st
         fpath = Path(font_file).expanduser()
         if fpath.is_file():
             font_dir = str(fpath.parent)
-            # Heuristic: use stem before dash/underscore as font family name.
             font_name = fpath.stem.split("-")[0].replace("_", " ").strip()
             if font_name:
                 style_parts.append(f"Fontname={font_name}")
@@ -47,6 +48,7 @@ def _validate_ordered_paths(paths: Iterable[str], order: str, seed: int | None =
         rnd.shuffle(items)
     return items
 
+
 def build_video_playlist(
     video_paths: list,
     audio_path: str,
@@ -61,29 +63,26 @@ def build_video_playlist(
     height: int = 1080,
     fps: int = 30,
 ):
-    """
-    Concatenate multiple clips (hard cuts), repeat the sequence until it covers
-    the narration duration, trim to length, then add audio + subtitles.
-    """
+    """Concatenate clips, align duration with audio, and mux subtitles/audio."""
+
     if burn and soft:
         raise ValueError("Choose either burn OR soft subtitles, not both.")
 
     require_ffmpeg()
     adur = ffprobe_duration(audio_path)
+    logger.info("Preparing playlist with %d clips to cover %.2fs narration", len(video_paths), adur)
 
-    # Measure durations and build a repeated list long enough
     durs = [ffprobe_duration(p) for p in video_paths]
     seq = []
     total = 0.0
     i = 0
-    while total < adur + 1.0:  # small safety margin
+    while total < adur + 1.0:
         idx = i % len(video_paths)
         seq.append((video_paths[idx], durs[idx]))
         total += durs[idx]
         i += 1
 
-    # Inputs: all videos first, then audio (and maybe subs)
-    cmd = ["ffmpeg", "-y"]
+    cmd = ["ffmpeg", "-loglevel", ffmpeg_log_level(), "-y"]
     for v, _ in seq:
         cmd += ["-i", v]
     cmd += ["-i", audio_path]
@@ -94,9 +93,6 @@ def build_video_playlist(
         cmd += ["-i", subs_path]
         subs_idx = audio_idx + 1
 
-    # Build filter_complex:
-    # - Normalize each video to same size (scale+pad), fps, and reset PTS
-    # - Concat videos
     filter_parts = []
     labels = []
     for idx in range(len(seq)):
@@ -107,7 +103,6 @@ def build_video_playlist(
         labels.append(f"[v{idx}]")
     filter_parts.append(f"{''.join(labels)}concat=n={len(seq)}:v=1:a=0[vcat]")
 
-    # Burn subtitles or keep them soft
     vmap = "[vcat]"
     if burn:
         subf = _subtitles_filter(subs_path, font_size, font_file)
@@ -115,18 +110,28 @@ def build_video_playlist(
         vmap = "[vout]"
 
     output_opts = [
-        "-filter_complex", ";".join(filter_parts),
-        "-t", f"{adur:.3f}",
-        "-map", vmap,
-        "-map", f"{audio_idx}:a:0",
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-t",
+        f"{adur:.3f}",
+        "-map",
+        vmap,
+        "-map",
+        f"{audio_idx}:a:0",
     ]
 
     if soft and subs_idx is not None:
         output_opts += ["-map", f"{subs_idx}:0"]
 
     output_opts += [
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
     ]
 
     if soft:
@@ -140,6 +145,8 @@ def build_video_playlist(
     output_opts += ["-shortest", out_path]
 
     cmd += output_opts
+    logger.info("Running ffmpeg playlist render -> %s", out_path)
+    logger.debug("ffmpeg command: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     return out_path
 
@@ -155,68 +162,71 @@ def loop_and_build_video(
     font_file: str = "",
     subtitle_language: str = "und",
 ):
-    """
-    Loops the village clip to match audio length, muxes audio, and either burns or embeds subtitles.
-    """
+    """Loop a single clip to cover the audio duration and mux subtitles/audio."""
+
     if burn and soft:
         raise ValueError("Choose either burn OR soft subtitles, not both.")
 
     require_ffmpeg()
-
-    # Get audio duration to know how long to loop the video
     adur = ffprobe_duration(audio_path)
+    logger.info("Looping clip %s to cover %.2fs narration", video_path, adur)
 
-    # Build the base command:
-    #  - loop the video indefinitely (-stream_loop -1), then trim to audio duration (-t <adur>)
-    #  - re-encode video to H.264, ensure yuv420p for compatibility
-    #  - map audio from file, normalize sample rate, and -shortest to cut to the shorter stream
-    base = [
-        "ffmpeg", "-y",
-        "-stream_loop", "-1", "-i", video_path,
-        "-i", audio_path,
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        ffmpeg_log_level(),
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-i",
+        video_path,
+        "-i",
+        audio_path,
     ]
 
     audio_idx = 1
     subs_idx = None
     if soft:
-        base += ["-i", subs_path]
+        cmd += ["-i", subs_path]
         subs_idx = 2
 
-    base += ["-t", f"{adur:.3f}"]
+    cmd += ["-t", f"{adur:.3f}"]
 
     vf_filters = []
     if burn:
-        # Subtitles burn-in (requires libass; ffmpeg from Homebrew includes it)
         sub_filter = _subtitles_filter(subs_path, font_size, font_file)
         vf_filters.append(sub_filter)
 
     if vf_filters:
-        base += ["-vf", ",".join(vf_filters)]
+        cmd += ["-vf", ",".join(vf_filters)]
 
     map_opts = ["-map", "0:v:0", "-map", f"{audio_idx}:a:0"]
     if soft and subs_idx is not None:
         map_opts += ["-map", f"{subs_idx}:0"]
 
-    base += map_opts + [
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
+    cmd += map_opts + [
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
     ]
 
     if soft:
-        base += [
+        cmd += [
             "-c:s",
             "mov_text",
             "-metadata:s:s:0",
             f"language={subtitle_language}",
         ]
 
-    base += [
-        "-shortest",
-        out_path
-    ]
-
-    # Run
-    subprocess.check_call(base)
+    cmd += ["-shortest", out_path]
+    logger.info("Running ffmpeg loop render -> %s", out_path)
+    logger.debug("ffmpeg command: %s", " ".join(cmd))
+    subprocess.check_call(cmd)
     return out_path
 
 
@@ -251,6 +261,12 @@ def build_slideshow_from_images(
     ordered = _validate_ordered_paths(image_paths, order, seed=seed)
 
     adur = ffprobe_duration(audio_path)
+    logger.info(
+        "Building slideshow with %d images (order=%s, duration=%.2fs)",
+        len(ordered),
+        order,
+        image_duration,
+    )
     total = 0.0
     seq: list[str] = []
     idx = 0
@@ -260,8 +276,7 @@ def build_slideshow_from_images(
         total += image_duration
         idx += 1
 
-    cmd = ["ffmpeg", "-y"]
-    # Attach each image as a looping input lasting image_duration seconds
+    cmd = ["ffmpeg", "-loglevel", ffmpeg_log_level(), "-y"]
     for path in seq:
         cmd += ["-loop", "1", "-t", f"{image_duration:.3f}", "-i", path]
     cmd += ["-i", audio_path]
@@ -289,18 +304,28 @@ def build_slideshow_from_images(
         vmap = "[vout]"
 
     output_opts = [
-        "-filter_complex", ";".join(filter_parts),
-        "-t", f"{adur:.3f}",
-        "-map", vmap,
-        "-map", f"{audio_idx}:a:0",
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-t",
+        f"{adur:.3f}",
+        "-map",
+        vmap,
+        "-map",
+        f"{audio_idx}:a:0",
     ]
 
     if soft and subs_idx is not None:
         output_opts += ["-map", f"{subs_idx}:0"]
 
     output_opts += [
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
     ]
 
     if soft:
@@ -314,5 +339,7 @@ def build_slideshow_from_images(
     output_opts += ["-shortest", out_path]
 
     cmd += output_opts
+    logger.info("Running ffmpeg slideshow render -> %s", out_path)
+    logger.debug("ffmpeg command: %s", " ".join(cmd))
     subprocess.check_call(cmd)
     return out_path

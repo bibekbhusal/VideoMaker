@@ -1,3 +1,6 @@
+[global]
+log_level = "WARN"
+
 [transcribe]
 model = "Systran/faster-whisper-large-v3"
 device = "auto"
@@ -5,6 +8,8 @@ compute_type = "float32"
 language = "auto"
 clean_audio = true
 vad_filter = true
+vad_threshold = 0.35
+vad_min_silence_ms = 250
 beam_size = 8
 # Leave best_of unset to rely on beam search
 temperature = 0.0

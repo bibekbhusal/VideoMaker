@@ -8,6 +8,7 @@ CLI helpers for turning a narrated audio track (Nepali, Hindi, English, …) int
 - **Video builder** that loops clips from a directory or creates slideshows from still images (alphabetical or random order) to cover the narration.
 - **Subtitle handling** with a single `--burn` switch: `force` hard-burns text using a Mukta font (downloaded automatically), while `soft` embeds a toggleable subtitle track with custom language tags.
 - **Smart path resolution** – relative audio paths are resolved against `audio/` (and `audios/` for legacy folders), while clip/image directories fall back to `media/` (or `clips/`) if not found beside the CLI.
+- **Structured logging** – unified `--log-level` control plus FFmpeg log propagation for easier debugging.
 
 ## Installation
 ```bash
@@ -15,6 +16,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
+# editable install for the CLI entry point
+pip install -e .
 ```
 
 Install FFmpeg (with libass) if you have not already:
@@ -93,17 +96,29 @@ Key flags:
 - `--clean-audio/--no-clean-audio` – keep RNNoise on by default or skip it.
 - `--subtitle-language` – set the ISO 639-2 code used for embedded subtitle tracks (e.g., `nep`, `hin`).
 - `--image-order` (`alphabetical`/`random`) & `--image-seed` – control slideshow sequencing.
+- `--log-level` – change runtime logging (DEBUG, INFO, WARN, …).
+
+### Voice Activity Detection tips
+
+- Leave `--vad` enabled for most workflows; it helps drop long silences.
+- If quieter speech is being skipped, lower `--vad-threshold` (e.g., `0.3`) and/or reduce the silence requirement with `--vad-min-silence-ms 200`.
+- You can disable VAD altogether (`--no-vad`) if your audio is clean and already trimmed.
 
 ## Configuration (`videomaker.toml`)
 
 You can store defaults in `videomaker.toml` at the project root. Example:
 
 ```toml
+[global]
+log_level = "WARN"
+
 [transcribe]
 model = "Systran/faster-whisper-large-v3"
 language = "auto"
 clean_audio = true
 vad_filter = true
+vad_threshold = 0.35
+vad_min_silence_ms = 250
 beam_size = 8
 word_timestamps = true
 max_line_words = 12
