@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import random
 import re
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import typer
 from rich import box, print
@@ -539,7 +540,7 @@ def build_video(
         logger.info("Discovered %d clip(s)", len(clips))
 
     image_inputs: List[str] = []
-    image_config_data: Optional[dict[str, float]] = None
+    image_config_data: Optional[dict[str, Tuple[float, float]]] = None
     if images_dir:
         image_directory = _resolve_existing(
             images_dir,
@@ -563,14 +564,21 @@ def build_video(
                 )
             image_config_data = {}
             for key, value in payload.items():
+                if not isinstance(value, (list, tuple)) or len(value) != 2:
+                    raise typer.BadParameter(
+                        f"Image config entry for {key!r} must be a [start, end] list"
+                    )
                 try:
-                    duration = float(value)
+                    start = float(value[0])
+                    end = float(value[1])
                 except (TypeError, ValueError) as exc:
-                    raise typer.BadParameter(f"Invalid duration for {key!r}: {value}") from exc
-                if duration <= 0:
-                    raise typer.BadParameter(f"Duration must be positive for {key!r}")
-                image_config_data[key] = duration
-            logger.info("Loaded image duration config for %d file(s)", len(image_config_data))
+                    raise typer.BadParameter(f"Invalid timestamps for {key!r}: {value}") from exc
+                if end <= start:
+                    raise typer.BadParameter(
+                        f"End timestamp must be greater than start for {key!r}"
+                    )
+                image_config_data[key] = (start, end)
+            logger.info("Loaded image timing config for %d file(s)", len(image_config_data))
 
     if clips and image_inputs:
         raise typer.BadParameter(
@@ -594,28 +602,43 @@ def build_video(
         if image_duration is not None and image_duration <= 0:
             raise typer.BadParameter("--image-duration must be positive")
 
+        filtered_images: List[str] = []
         durations: List[float] = []
         needs_default = image_duration is None
-        audio_seconds = None
-        if needs_default:
-            audio_seconds = ffprobe_duration(str(audio_path))
+        audio_seconds = ffprobe_duration(str(audio_path)) if needs_default else None
+        auto_duration = None
+        if needs_default and audio_seconds is not None:
+            auto_duration = max(audio_seconds / len(image_inputs), 0.5)
 
         for path in image_inputs:
             base = pathlib.Path(path).name
-            configured = None
             if image_config_data and base in image_config_data:
-                configured = image_config_data[base]
-            if configured is not None:
+                start, end = image_config_data[base]
+                configured = end - start
+                if configured <= 0:
+                    logger.warning(
+                        "Skipping %s due to non-positive configured duration (%.2fs)",
+                        base,
+                        configured,
+                    )
+                    continue
+                filtered_images.append(path)
                 durations.append(configured)
-                logger.info("Using configured duration %.2fs for %s", configured, base)
+                logger.info(
+                    "Using configured window %.2f–%.2fs (%s)",
+                    start,
+                    end,
+                    base,
+                )
                 continue
 
             if image_duration is not None:
+                filtered_images.append(path)
                 durations.append(image_duration)
                 continue
 
-            assert audio_seconds is not None
-            auto_duration = max(audio_seconds / len(image_inputs), 0.5)
+            assert auto_duration is not None
+            filtered_images.append(path)
             durations.append(auto_duration)
             logger.info(
                 "Auto image duration %.2fs based on %d image(s) and %.2fs narration",
@@ -624,6 +647,11 @@ def build_video(
                 audio_seconds,
             )
 
+        image_inputs = filtered_images
+        if not image_inputs:
+            raise typer.BadParameter(
+                "No valid images remain after applying --image-config"
+            )
         image_duration_list = durations
     else:
         image_duration_list = None
@@ -757,6 +785,71 @@ def build_video(
 
     logger.info("Video render complete -> %s", final)
     print(f"[bold green]Done:[/bold green] {final}")
+
+
+@app.command("init-image-config")
+def init_image_config(
+    audio: pathlib.Path = typer.Argument(..., exists=True, readable=True),
+    images_dir: pathlib.Path = typer.Argument(..., exists=True, readable=True),
+    out: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path (defaults to <images_dir>/image_config.json)",
+    ),
+    order: str = typer.Option(
+        "alphabetical",
+        "--image-order",
+        help="Ordering used when assigning windows",
+        show_default=True,
+    ),
+) -> None:
+    """Generate an image_config JSON with equal-duration timestamps."""
+
+    audio_path = _resolve_existing(
+        audio,
+        expect_dir=False,
+        search_roots=_AUDIO_SEARCH_DIRS,
+        description="Audio file",
+    )
+    directory = images_dir.expanduser().resolve()
+    if not directory.is_dir():
+        raise typer.BadParameter(f"{directory} is not a directory")
+
+    images = _collect_media_files(directory, _IMAGE_EXTS)
+    if not images:
+        raise typer.BadParameter(f"No images found in {directory}")
+
+    duration = ffprobe_duration(str(audio_path))
+    base_duration = duration / len(images) if images else 0.0
+
+    order_key = order.lower()
+    if order_key not in {"alphabetical", "random"}:
+        raise typer.BadParameter("--image-order must be 'alphabetical' or 'random'")
+    if order_key == "alphabetical":
+        ordered = sorted(images, key=lambda p: _natural_key(pathlib.Path(p).name))
+    else:
+        ordered = images[:]
+        random.shuffle(ordered)
+
+    config: Dict[str, List[float]] = {}
+    current = 0.0
+    for path in ordered:
+        name = pathlib.Path(path).name
+        if current >= duration:
+            config[name] = [-1.0, -1.0]
+            continue
+        end = min(duration, current + base_duration)
+        config[name] = [round(current, 3), round(end, 3)]
+        current = end
+
+    if out is None:
+        out_path = directory / "image_config.json"
+    else:
+        out_path = out.expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    out_path.write_text(json.dumps(config, indent=2, ensure_ascii=False))
+    typer.echo(f"Wrote {len(config)} entries to {out_path}")
 
 
 if __name__ == "__main__":

@@ -110,13 +110,22 @@ Per-image timing configuration example (`durations.json`):
 
 ```json
 {
-  "img01.jpg": 4.5,
-  "img02.jpg": 6.0,
-  "closing.png": 8
+  "img01.jpg": [0, 4.5],
+  "img02.jpg": [4.5, 10.5],
+  "closing.png": [10.5, 18]
 }
 ```
 
 Any images not listed fall back to `--image-duration` (if provided) or the automatic even split.
+
+Generate a starter file:
+
+```bash
+scripts/init-image-config.sh audio/Saas.m4a media/photos/Saas
+videomaker init-image-config audio/Saas.m4a media/photos/Saas
+```
+
+This produces `media/photos/Saas/image_config.json` with sequential five-second windows you can edit.
 
 ### Voice Activity Detection tips
 
