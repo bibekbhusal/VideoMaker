@@ -1,6 +1,51 @@
 
-import subprocess, shlex
-from .utils import require_ffmpeg, ffprobe_duration, safe
+import os
+import random
+import subprocess
+from pathlib import Path
+from typing import Iterable, List
+
+from .utils import ffprobe_duration, require_ffmpeg, safe
+
+
+def _subtitles_filter(subs_path: str, font_size: int, font_file: str = "") -> str:
+    """Build a subtitles filter string with optional font directory/name overrides."""
+
+    style_parts = [f"Fontsize={font_size}"]
+    filter_parts = [f"subtitles={safe(subs_path)}"]
+
+    font_dir = ""
+    font_name = ""
+    if font_file:
+        fpath = Path(font_file).expanduser()
+        if fpath.is_file():
+            font_dir = str(fpath.parent)
+            # Heuristic: use stem before dash/underscore as font family name.
+            font_name = fpath.stem.split("-")[0].replace("_", " ").strip()
+            if font_name:
+                style_parts.append(f"Fontname={font_name}")
+    if font_dir:
+        filter_parts.append(f"fontsdir={safe(font_dir)}")
+
+    filter_parts.append(f"force_style='{','.join(style_parts)}'")
+    return ":".join(filter_parts)
+
+
+def _validate_ordered_paths(paths: Iterable[str], order: str, seed: int | None = None) -> List[str]:
+    items = [os.fspath(p) for p in paths]
+    if not items:
+        raise ValueError("Provide at least one media path.")
+
+    order_key = order.lower()
+    if order_key not in {"alphabetical", "random"}:
+        raise ValueError("order must be either 'alphabetical' or 'random'")
+
+    if order_key == "alphabetical":
+        items.sort(key=lambda p: Path(p).name.lower())
+    else:
+        rnd = random.Random(seed)
+        rnd.shuffle(items)
+    return items
 
 def build_video_playlist(
     video_paths: list,
@@ -64,7 +109,7 @@ def build_video_playlist(
     # Burn subtitles or keep them soft
     vmap = "[vcat]"
     if burn:
-        subf = f"subtitles={safe(subs_path)}:force_style='Fontsize={font_size}'"
+        subf = _subtitles_filter(subs_path, font_size, font_file)
         filter_parts.append(f"{vmap}{subf}[vout]")
         vmap = "[vout]"
 
@@ -135,12 +180,7 @@ def loop_and_build_video(
     vf_filters = []
     if burn:
         # Subtitles burn-in (requires libass; ffmpeg from Homebrew includes it)
-        style_parts = [f"Fontsize={font_size}"]
-        if font_file:
-            # Use font file via FONTCONFIG path or drawtext; simplest: rely on libass fontconfig discovery
-            # Users can install fonts to ~/Library/Fonts and refer by family name if needed.
-            pass
-        sub_filter = f"subtitles={safe(subs_path)}:force_style='{','.join(style_parts)}'"
+        sub_filter = _subtitles_filter(subs_path, font_size, font_file)
         vf_filters.append(sub_filter)
 
     if vf_filters:
@@ -165,4 +205,96 @@ def loop_and_build_video(
 
     # Run
     subprocess.check_call(base)
+    return out_path
+
+
+def build_slideshow_from_images(
+    image_paths: list,
+    audio_path: str,
+    subs_path: str,
+    out_path: str,
+    *,
+    order: str = "alphabetical",
+    seed: int | None = None,
+    image_duration: float = 5.0,
+    burn: bool = True,
+    soft: bool = False,
+    font_size: int = 28,
+    font_file: str = "",
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
+) -> str:
+    """Create a looping slideshow from still images to match the narration length."""
+
+    if burn and soft:
+        raise ValueError("Choose either burn OR soft subtitles, not both.")
+
+    require_ffmpeg()
+
+    if image_duration <= 0:
+        raise ValueError("image_duration must be positive")
+
+    ordered = _validate_ordered_paths(image_paths, order, seed=seed)
+
+    adur = ffprobe_duration(audio_path)
+    total = 0.0
+    seq: list[str] = []
+    idx = 0
+    safety = adur + 1.0
+    while total < safety:
+        seq.append(ordered[idx % len(ordered)])
+        total += image_duration
+        idx += 1
+
+    cmd = ["ffmpeg", "-y"]
+    # Attach each image as a looping input lasting image_duration seconds
+    for path in seq:
+        cmd += ["-loop", "1", "-t", f"{image_duration:.3f}", "-i", path]
+    cmd += ["-i", audio_path]
+
+    audio_idx = len(seq)
+    subs_idx = None
+    if soft:
+        cmd += ["-i", subs_path]
+        subs_idx = audio_idx + 1
+
+    filter_parts = []
+    labels = []
+    for idx in range(len(seq)):
+        filter_parts.append(
+            f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},setpts=PTS-STARTPTS[v{idx}]"
+        )
+        labels.append(f"[v{idx}]")
+    filter_parts.append(f"{''.join(labels)}concat=n={len(seq)}:v=1:a=0[vcat]")
+
+    vmap = "[vcat]"
+    if burn:
+        subf = _subtitles_filter(subs_path, font_size, font_file)
+        filter_parts.append(f"{vmap}{subf}[vout]")
+        vmap = "[vout]"
+
+    output_opts = [
+        "-filter_complex", ";".join(filter_parts),
+        "-t", f"{adur:.3f}",
+        "-map", vmap,
+        "-map", f"{audio_idx}:a:0",
+    ]
+
+    if soft and subs_idx is not None:
+        output_opts += ["-map", f"{subs_idx}:0"]
+
+    output_opts += [
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+    ]
+
+    if soft:
+        output_opts += ["-c:s", "mov_text", "-metadata:s:s:0", "language=nep"]
+
+    output_opts += ["-shortest", out_path]
+
+    cmd += output_opts
+    subprocess.check_call(cmd)
     return out_path

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Create Nepali narration videos from audio + stock clip with auto subtitles (SRT)."
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [{name="Your Name"}]
+authors = [{name="Nepali Video Maintainers", email="maintainers@example.com"}]
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
@@ -20,3 +20,11 @@ nepali-video = "nepali_video.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["B008"]

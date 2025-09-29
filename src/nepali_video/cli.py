@@ -1,18 +1,94 @@
 from __future__ import annotations
 
 import pathlib
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import typer
 from rich import box, print
 from rich.table import Table
 
+from .audio import denoise_audio
 from .config import get_default
+from .fonts import ensure_nepali_font
 from .stt import transcribe_to_srt
-from .video import build_video_playlist, loop_and_build_video
-
+from .video import (
+    build_slideshow_from_images,
+    build_video_playlist,
+    loop_and_build_video,
+)
 
 app = typer.Typer(pretty_exceptions_show_locals=False, add_completion=False)
+
+
+_AUDIO_SEARCH_DIRS: Sequence[pathlib.Path] = (
+    pathlib.Path("."),
+    pathlib.Path("audio"),
+    pathlib.Path("audios"),
+)
+
+_ASSET_SEARCH_DIRS: Sequence[pathlib.Path] = (
+    pathlib.Path("."),
+    pathlib.Path("media"),
+    pathlib.Path("media/videos"),
+    pathlib.Path("media/images"),
+    pathlib.Path("media/clips"),
+    pathlib.Path("clips"),
+)
+
+_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".webm")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def _dedupe(paths: Sequence[pathlib.Path]) -> List[pathlib.Path]:
+    seen = set()
+    ordered: List[pathlib.Path] = []
+    for path in paths:
+        key = path.expanduser()
+        s = str(key)
+        if s in seen:
+            continue
+        seen.add(s)
+        ordered.append(key)
+    return ordered
+
+
+def _resolve_existing(
+    path: pathlib.Path,
+    *,
+    expect_dir: bool,
+    search_roots: Sequence[pathlib.Path],
+    description: str,
+) -> pathlib.Path:
+    """Resolve a possibly-relative path by searching known roots.
+
+    The helper walks through candidate directories such as ``audio/`` or
+    ``media/`` until it finds a matching file/directory. A descriptive
+    ``typer.BadParameter`` is raised if the path cannot be located.
+    """
+
+    candidates: List[pathlib.Path] = [path.expanduser()]
+    if not candidates[0].is_absolute():
+        for root in search_roots:
+            base = root.expanduser()
+            candidate = (base / path).expanduser()
+            candidates.append(candidate)
+
+    for candidate in _dedupe(candidates):
+        if expect_dir and candidate.is_dir():
+            return candidate.resolve()
+        if not expect_dir and candidate.is_file():
+            return candidate.resolve()
+
+    checked = ", ".join(str(c) for c in _dedupe(candidates))
+    raise typer.BadParameter(f"{description} '{path}' not found. Checked: {checked}")
+
+
+def _collect_media_files(directory: pathlib.Path, extensions: Sequence[str]) -> List[str]:
+    files: List[str] = []
+    for child in sorted(directory.iterdir()):
+        if child.is_file() and child.suffix.lower() in extensions:
+            files.append(str(child))
+    return files
 
 
 @app.command()
@@ -20,12 +96,10 @@ def transcribe(
     audio: pathlib.Path = typer.Option(
         ...,
         "--audio",
-        exists=True,
-        readable=True,
         help="Path to narration audio (WAV/MP3/FLAC/etc.)",
     ),
-    out: pathlib.Path = typer.Option(
-        pathlib.Path(get_default("transcribe", "out", "subs.srt")),
+    out: Optional[pathlib.Path] = typer.Option(
+        None,
         "--out",
         help="Output SRT path",
     ),
@@ -84,11 +158,6 @@ def transcribe(
         "--word-timestamps/--segment-timestamps",
         help="Generate word-level timestamps for better subtitle splits",
     ),
-    max_line_chars: int = typer.Option(
-        get_default("transcribe", "max_line_chars", 48),
-        "--max-line-chars",
-        help="Maximum characters per subtitle line when word timestamps are enabled",
-    ),
     max_line_words: int = typer.Option(
         get_default("transcribe", "max_line_words", 12),
         "--max-line-words",
@@ -142,9 +211,24 @@ def transcribe(
 ):
     """Transcribe Nepali narration to SRT subtitles."""
 
+    audio_path = _resolve_existing(
+        audio,
+        expect_dir=False,
+        search_roots=_AUDIO_SEARCH_DIRS,
+        description="Audio file",
+    )
+
+    configured_out = get_default("transcribe", "out", "")
+    if out is not None:
+        out_path = out
+    elif configured_out:
+        out_path = pathlib.Path(configured_out)
+    else:
+        out_path = audio_path.with_suffix(".srt")
+
     srt_path, rtf = transcribe_to_srt(
-        audio_path=str(audio),
-        out_srt=str(out),
+        audio_path=str(audio_path),
+        out_srt=str(out_path),
         model_name=model,
         device=device,
         compute_type=compute_type,
@@ -156,7 +240,6 @@ def transcribe(
         initial_prompt=initial_prompt,
         condition_on_previous_text=condition_on_previous_text,
         word_timestamps=word_timestamps,
-        max_line_chars=max_line_chars,
         max_line_words=max_line_words,
         max_line_duration=max_line_duration,
         max_gap=max_gap,
@@ -178,23 +261,36 @@ def transcribe(
 
 @app.command("build-video")
 def build_video(
-    video: List[pathlib.Path] = typer.Option(
-        None,
-        "--video",
-        help="Repeatable --video path(s) for a playlist",
-        exists=True,
-        readable=True,
-    ),
     clips_dir: Optional[pathlib.Path] = typer.Option(
         None,
         "--clips-dir",
-        help="Directory with clips (mp4/mov)",
+        help="Directory with video clips (relative paths also search assets/ and clips/)",
+    ),
+    images_dir: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--images-dir",
+        help="Directory with still images (relative paths also search assets/)",
+    ),
+    image_order: str = typer.Option(
+        str(get_default("build_video", "image_order", "alphabetical")),
+        "--image-order",
+        help="Order to cycle still images: alphabetical or random",
+        show_default=True,
+    ),
+    image_duration: float = typer.Option(
+        float(get_default("build_video", "image_duration", 5.0)),
+        "--image-duration",
+        min=0.2,
+        help="Seconds each image is shown before advancing",
+    ),
+    image_seed: Optional[int] = typer.Option(
+        None,
+        "--image-seed",
+        help="Optional seed used when --image-order=random",
     ),
     audio: pathlib.Path = typer.Option(
         ...,
         "--audio",
-        exists=True,
-        readable=True,
     ),
     subs: pathlib.Path = typer.Option(
         ...,
@@ -202,61 +298,183 @@ def build_video(
         exists=True,
         readable=True,
     ),
-    out: pathlib.Path = typer.Option(
-        pathlib.Path(get_default("build_video", "out", "output.mp4")),
+    out: Optional[pathlib.Path] = typer.Option(
+        None,
         "--out",
+        help="Output MP4 path (defaults to audio name)",
     ),
-    burn: bool = typer.Option(
-        get_default("build_video", "burn", False),
+    burn: str = typer.Option(
+        str(get_default("build_video", "burn", "force")),
         "--burn",
-    ),
-    soft: bool = typer.Option(
-        get_default("build_video", "soft", False),
-        "--soft",
+        help="Subtitle mode: force (burn-in) or soft (embedded track)",
+        show_default=True,
     ),
     font_size: int = typer.Option(
-        get_default("build_video", "font_size", 28),
+        get_default("build_video", "font_size", 40),
         "--font-size",
     ),
-    font_file: str = typer.Option(
-        get_default("build_video", "font_file", ""),
+    font_file: Optional[pathlib.Path] = typer.Option(
+        None,
         "--font-file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Override font file used when burning subtitles",
+    ),
+    clean_audio: bool = typer.Option(
+        True,
+        "--clean-audio/--no-clean-audio",
+        help="Run RNNoise noise suppression on the narration before muxing",
+    ),
+    rnnoise_model: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--rnnoise-model",
+        help="Optional custom RNNoise model for noise suppression",
     ),
 ):
-    """Loop clips to cover the narration, mux audio, and add subtitles."""
+    """Loop clips or images to cover the narration, mux audio, and add subtitles."""
 
     clips: List[str] = []
-    if video:
-        clips.extend([str(v) for v in video])
     if clips_dir:
-        for ext in ("*.mp4", "*.mov", "*.mkv", "*.m4v", "*.webm"):
-            clips.extend([str(p) for p in clips_dir.glob(ext)])
-
-    if not clips:
-        raise typer.BadParameter("Provide at least one --video or a --clips-dir with video files.")
-
-    if len(clips) == 1:
-        final = loop_and_build_video(
-            clips[0],
-            str(audio),
-            str(subs),
-            str(out),
-            burn=burn,
-            soft=soft,
-            font_size=font_size,
-            font_file=font_file,
+        clip_directory = _resolve_existing(
+            clips_dir,
+            expect_dir=True,
+            search_roots=_ASSET_SEARCH_DIRS,
+            description="Video directory",
         )
+        clips = _collect_media_files(clip_directory, _VIDEO_EXTS)
+        if not clips:
+            raise typer.BadParameter(f"No video files found in {clip_directory}")
+
+    image_inputs: List[str] = []
+    if images_dir:
+        image_directory = _resolve_existing(
+            images_dir,
+            expect_dir=True,
+            search_roots=_ASSET_SEARCH_DIRS,
+            description="Image directory",
+        )
+        image_inputs = _collect_media_files(image_directory, _IMAGE_EXTS)
+        if not image_inputs:
+            raise typer.BadParameter(f"No image files found in {image_directory}")
+
+    if clips and image_inputs:
+        raise typer.BadParameter(
+            "Choose either video clips or still images for the background, not both."
+        )
+
+    if not clips and not image_inputs:
+        raise typer.BadParameter(
+            "Provide at least one --clips-dir or --images-dir with media files."
+        )
+
+    if image_inputs and image_duration <= 0:
+        raise typer.BadParameter("--image-duration must be positive")
+
+    audio_path = _resolve_existing(
+        audio,
+        expect_dir=False,
+        search_roots=_AUDIO_SEARCH_DIRS,
+        description="Audio file",
+    )
+
+    mode = (burn or "force").strip().lower()
+    if mode not in {"force", "soft"}:
+        raise typer.BadParameter("--burn must be 'force' or 'soft'")
+    burn_subtitles = mode == "force"
+    soft_subtitles = mode == "soft"
+
+    configured_out = get_default("build_video", "out", "")
+    if out is not None:
+        out_path = out
+    elif configured_out:
+        out_path = pathlib.Path(configured_out)
     else:
-        final = build_video_playlist(
-            clips,
-            str(audio),
-            str(subs),
-            str(out),
-            burn=burn,
-            soft=soft,
-            font_size=font_size,
-            font_file=font_file,
-        )
+        out_path = audio_path.with_suffix(".mp4")
+
+    configured_font = get_default("build_video", "font_file", "")
+    if font_file:
+        font_path: Optional[pathlib.Path] = font_file.resolve()
+    elif configured_font:
+        candidate = pathlib.Path(configured_font).expanduser()
+        font_path = candidate.resolve() if candidate.is_file() else None
+        if configured_font and font_path is None:
+            typer.secho(
+                f"Configured font file {configured_font!r} not found; falling back to bundled font",
+                err=True,
+                fg=typer.colors.YELLOW,
+            )
+    else:
+        font_path = None
+
+    if burn_subtitles and font_path is None:
+        try:
+            font_path = ensure_nepali_font()
+        except Exception as exc:  # pragma: no cover - network failures
+            typer.secho(f"Failed to download Nepali font: {exc}", err=True, fg=typer.colors.RED)
+            font_path = None
+
+    narration_path = str(audio_path)
+    cleanup_audio = False
+    if clean_audio:
+        model_path = str(rnnoise_model) if rnnoise_model else None
+        try:
+            narrated = denoise_audio(narration_path, model_path=model_path)
+        except FileNotFoundError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        narration_path = narrated
+        cleanup_audio = True
+
+    try:
+        if image_inputs:
+            order = image_order.lower()
+            try:
+                final = build_slideshow_from_images(
+                    image_inputs,
+                    narration_path,
+                    str(subs),
+                    str(out_path),
+                    order=order,
+                    seed=image_seed,
+                    image_duration=image_duration,
+                    burn=burn_subtitles,
+                    soft=soft_subtitles,
+                    font_size=font_size,
+                    font_file=str(font_path) if font_path else "",
+                )
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+        else:
+            font_arg = str(font_path) if font_path else ""
+            try:
+                if len(clips) == 1:
+                    final = loop_and_build_video(
+                        clips[0],
+                        narration_path,
+                        str(subs),
+                        str(out_path),
+                        burn=burn_subtitles,
+                        soft=soft_subtitles,
+                        font_size=font_size,
+                        font_file=font_arg,
+                    )
+                else:
+                    final = build_video_playlist(
+                        clips,
+                        narration_path,
+                        str(subs),
+                        str(out_path),
+                        burn=burn_subtitles,
+                        soft=soft_subtitles,
+                        font_size=font_size,
+                        font_file=font_arg,
+                    )
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+    finally:
+        if cleanup_audio:
+            pathlib.Path(narration_path).unlink(missing_ok=True)
 
     print(f"[bold green]Done:[/bold green] {final}")
 

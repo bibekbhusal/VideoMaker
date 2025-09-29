@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Tuple
 
-import datetime as dt
 import srt
 from faster_whisper import WhisperModel
 
@@ -148,7 +148,7 @@ def transcribe_to_srt(
     initial_prompt: Optional[str] = None,
     condition_on_previous_text: bool = False,
     word_timestamps: bool = False,
-    max_line_chars: int = 48,
+    max_line_chars: int = 0,
     max_line_words: int = 12,
     max_line_duration: float = 5,
     max_gap: float = 0.8,

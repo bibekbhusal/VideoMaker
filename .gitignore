@@ -5,3 +5,7 @@ __pycache__/
 *.wav
 *.flac
 .DS_Store
+audio/
+audios/
+clips/
+media/
