@@ -69,8 +69,7 @@ def denoise_audio(
     model = ensure_rnnoise_model(model_path)
 
     if output_path is None:
-        suffix = Path(audio_path).suffix or ".wav"
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix, prefix="cleaned_")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix="cleaned_")
         tmp.close()
         output_path = tmp.name
 
@@ -84,7 +83,11 @@ def denoise_audio(
         "-af",
         f"arnndn=m={safe(model)}",
         "-c:a",
-        "pcm_s16le" if Path(output_path).suffix.lower() in {".wav", ".wave"} else "aac",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
         output_path,
     ]
     logger.info("Invoking ffmpeg noise suppression -> %s", output_path)

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import torch
 from transformers import AutoProcessor, pipeline
 
 from .stt import Segment, Word, _split_segments_words, to_srt
+from .utils import convert_to_wav
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +97,18 @@ def transcribe_mms_to_srt(
         model_id,
         sampling_rate,
     )
-    result = asr(audio_path)
+    cleanup_wav = None
+    if not audio_path.lower().endswith(".wav"):
+        cleanup_wav = convert_to_wav(audio_path)
+        audio_input = cleanup_wav
+    else:
+        audio_input = audio_path
+
+    try:
+        result = asr(audio_input)
+    finally:
+        if cleanup_wav:
+            Path(cleanup_wav).unlink(missing_ok=True)
     chunks = result.get("chunks") or []
     words: List[Word] = []
     for chunk in chunks:

@@ -63,7 +63,7 @@ videomaker transcribe \
 
 This writes `Saas.srt` next to the audio (override with `--out`). Audio is denoised with RNNoise by default—disable with `--no-clean-audio`. The bundled prompt lives at `prompts/initial_prompt.txt`; edit it or pass `--initial-prompt` for ad-hoc overrides. Useful switches:
 
-- `--backend mms --model facebook/mms-1b-nep` – opt into Meta's MMS ASR (downloads via Hugging Face; requires network on first use).
+- `--backend mms --model facebook/mms-1b-all` – opt into Meta's MMS ASR (downloads via Hugging Face; requires network on first use).
 - `--vad/--no-vad` – enable voice activity detection (default on).
 - `--condition-on-previous-text` – reuse the previously decoded text to keep context across segments.
 - `--max-line-words`, `--min-line-words`, `--max-line-duration`, `--max-gap` – control subtitle splitting.
@@ -158,7 +158,7 @@ Leave entries out to stick with CLI defaults. The `burn` value maps directly to 
 - **Noise model caching:** the RNNoise `.rnnn` model downloads into your cache folder on first use; pass `--rnnoise-model` to supply a custom model path.
 - **Font overrides:** use `--font-file /path/to/font.ttf` to burn subtitles with a specific typeface.
 - **Alternate ASR models:** If `Systran/faster-whisper-large-v3` struggles with Nepali speech, try [sarvamai/indic-whisper](https://huggingface.co/sarvamai/indic-whisper) (CT2 export available) or the Hindi-focussed [GauravSharma/indic-whisper-medium-hi](https://huggingface.co/GauravSharma/indic-whisper-medium-hi). Swap the `--model` argument; both models cover Nepali/Hindi phonetics and can outperform general Whisper on low-resource accents.
-- **MMS offline tips:** MMS weights are fetched from Hugging Face the first time you use them. Ensure outbound network is allowed or pre-download with `huggingface-cli download facebook/mms-1b-nep --local-dir models/mms-nep` and point `--model` to the local path.
+- **MMS offline tips:** MMS weights are fetched from Hugging Face the first time you use them. Ensure outbound network is allowed or pre-download with `huggingface-cli download facebook/mms-1b-all --local-dir models/mms-nep` and point `--model` to the local path.
 
 ## Changelog
 

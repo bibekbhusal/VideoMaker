@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -83,3 +84,32 @@ def download_file(url: str, destination: Path) -> Path:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
     return destination
+
+
+def convert_to_wav(source_path: str, *, sample_rate: int = 16000) -> str:
+    """Convert ``source_path`` to a temporary mono PCM WAV file."""
+
+    require_ffmpeg()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", prefix="mms_")
+    tmp.close()
+    dest = tmp.name
+
+    cmd = [
+        "ffmpeg",
+        "-loglevel",
+        ffmpeg_log_level(),
+        "-y",
+        "-i",
+        source_path,
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        dest,
+    ]
+    logger = logging.getLogger(__name__)
+    logger.debug("Converting %s -> %s via ffmpeg", source_path, dest)
+    subprocess.check_call(cmd)
+    return dest
