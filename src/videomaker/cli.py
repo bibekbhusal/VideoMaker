@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
+import re
 from typing import List, Optional, Sequence
 
 import typer
@@ -60,6 +62,23 @@ _ASSET_SEARCH_DIRS: Sequence[pathlib.Path] = (
 
 _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".m4v", ".webm")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp")
+
+_NUM_RE = re.compile(r"(\d+)")
+
+
+def _natural_key(value: str) -> List[tuple[int, object]]:
+    """Return a key suitable for natural sorting (numbers ordered numerically)."""
+
+    parts = _NUM_RE.split(value)
+    key: List[tuple[int, object]] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.lower()))
+    return key
 
 
 def _configure_logging(level: str) -> None:
@@ -141,7 +160,7 @@ def _resolve_existing(
 
 def _collect_media_files(directory: pathlib.Path, extensions: Sequence[str]) -> List[str]:
     files: List[str] = []
-    for child in sorted(directory.iterdir()):
+    for child in sorted(directory.iterdir(), key=lambda p: _natural_key(p.name)):
         if child.is_file() and child.suffix.lower() in extensions:
             files.append(str(child))
     return files
@@ -440,6 +459,17 @@ def build_video(
         "--image-seed",
         help="Optional seed used when --image-order=random",
     ),
+    image_config: Optional[pathlib.Path] = typer.Option(
+        (
+            pathlib.Path(cfg) if (cfg := get_default("build_video", "image_config", "")) else None
+        ),
+        "--image-config",
+        help="JSON file mapping image filename to duration (seconds)",
+        exists=True,
+        readable=True,
+        dir_okay=False,
+        file_okay=True,
+    ),
     audio: pathlib.Path = typer.Option(
         ...,
         "--audio",
@@ -509,6 +539,7 @@ def build_video(
         logger.info("Discovered %d clip(s)", len(clips))
 
     image_inputs: List[str] = []
+    image_config_data: Optional[dict[str, float]] = None
     if images_dir:
         image_directory = _resolve_existing(
             images_dir,
@@ -521,6 +552,25 @@ def build_video(
         if not image_inputs:
             raise typer.BadParameter(f"No image files found in {image_directory}")
         logger.info("Discovered %d image(s)", len(image_inputs))
+        if image_config:
+            try:
+                payload = json.loads(image_config.read_text(encoding="utf-8"))
+            except Exception as exc:  # pragma: no cover - file errors
+                raise typer.BadParameter(f"Failed to read image config: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise typer.BadParameter(
+                    "Image config must be a JSON object mapping filename to seconds"
+                )
+            image_config_data = {}
+            for key, value in payload.items():
+                try:
+                    duration = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise typer.BadParameter(f"Invalid duration for {key!r}: {value}") from exc
+                if duration <= 0:
+                    raise typer.BadParameter(f"Duration must be positive for {key!r}")
+                image_config_data[key] = duration
+            logger.info("Loaded image duration config for %d file(s)", len(image_config_data))
 
     if clips and image_inputs:
         raise typer.BadParameter(
@@ -532,25 +582,6 @@ def build_video(
             "Provide at least one --clips-dir or --images-dir with media files."
         )
 
-    if image_inputs:
-        if image_duration is not None and image_duration <= 0:
-            raise typer.BadParameter("--image-duration must be positive")
-        if image_duration is None:
-            audio_seconds = ffprobe_duration(str(audio))
-            image_duration = max(audio_seconds / len(image_inputs), 0.5)
-            logger.info(
-                "Auto image duration %.2fs based on %d image(s) and %.2fs narration",
-                image_duration,
-                len(image_inputs),
-                audio_seconds,
-            )
-        else:
-            logger.info(
-                "Using image duration %.2fs for %d image(s)",
-                image_duration,
-                len(image_inputs),
-            )
-
     audio_path = _resolve_existing(
         audio,
         expect_dir=False,
@@ -558,6 +589,44 @@ def build_video(
         description="Audio file",
     )
     logger.debug("Resolved audio path %s", audio_path)
+
+    if image_inputs:
+        if image_duration is not None and image_duration <= 0:
+            raise typer.BadParameter("--image-duration must be positive")
+
+        durations: List[float] = []
+        needs_default = image_duration is None
+        audio_seconds = None
+        if needs_default:
+            audio_seconds = ffprobe_duration(str(audio_path))
+
+        for path in image_inputs:
+            base = pathlib.Path(path).name
+            configured = None
+            if image_config_data and base in image_config_data:
+                configured = image_config_data[base]
+            if configured is not None:
+                durations.append(configured)
+                logger.info("Using configured duration %.2fs for %s", configured, base)
+                continue
+
+            if image_duration is not None:
+                durations.append(image_duration)
+                continue
+
+            assert audio_seconds is not None
+            auto_duration = max(audio_seconds / len(image_inputs), 0.5)
+            durations.append(auto_duration)
+            logger.info(
+                "Auto image duration %.2fs based on %d image(s) and %.2fs narration",
+                auto_duration,
+                len(image_inputs),
+                audio_seconds,
+            )
+
+        image_duration_list = durations
+    else:
+        image_duration_list = None
 
     mode = (burn or "force").strip().lower()
     if mode not in {"force", "soft"}:
@@ -621,11 +690,16 @@ def build_video(
         if image_inputs:
             order = image_order.lower()
             try:
+                sample_duration = (
+                    image_duration
+                    if image_duration is not None
+                    else (image_duration_list[0] if image_duration_list else 0.0)
+                )
                 logger.info(
-                    "Rendering slideshow (%d images, order=%s, duration=%.2fs)",
+                    "Rendering slideshow (%d images, order=%s, ~%.2fs each)",
                     len(image_inputs),
                     order,
-                    image_duration,
+                    sample_duration,
                 )
                 final = build_slideshow_from_images(
                     image_inputs,
@@ -634,7 +708,10 @@ def build_video(
                     str(out_path),
                     order=order,
                     seed=image_seed,
-                    image_duration=image_duration,
+                    image_duration=(
+                        image_duration if image_duration is not None else sample_duration
+                    ),
+                    image_durations=image_duration_list,
                     burn=burn_subtitles,
                     soft=soft_subtitles,
                     font_size=font_size,

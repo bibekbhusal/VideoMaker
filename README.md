@@ -101,9 +101,22 @@ Key flags:
 - `--initial-prompt` / `--initial-prompt-file` – steer decoding with a reusable text template.
 - `--temperature` – tweak decoder creativity (defaults to 0.2).
 - `--image-order` (`alphabetical`/`random`) & `--image-seed` – control slideshow sequencing.
+- `--image-config durations.json` – map individual images to custom durations (seconds).
 - `--log-level` – change runtime logging (DEBUG, INFO, WARN, …).
 
-If you omit `--image-duration`, VideoMaker divides the narration length evenly across every image discovered in the directory, so each still is shown for the same number of seconds.
+If you omit `--image-duration`, VideoMaker divides the narration length evenly across every image discovered in the directory, so each still is shown for the same number of seconds (minimum 0.5 s).
+
+Per-image timing configuration example (`durations.json`):
+
+```json
+{
+  "img01.jpg": 4.5,
+  "img02.jpg": 6.0,
+  "closing.png": 8
+}
+```
+
+Any images not listed fall back to `--image-duration` (if provided) or the automatic even split.
 
 ### Voice Activity Detection tips
 

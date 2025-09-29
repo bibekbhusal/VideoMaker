@@ -1,13 +1,29 @@
 import logging
 import os
 import random
+import re
 import subprocess
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from .utils import ffmpeg_log_level, ffprobe_duration, require_ffmpeg, safe
 
 logger = logging.getLogger(__name__)
+
+_NUM_RE = re.compile(r"(\d+)")
+
+
+def _natural_key(value: str) -> list[tuple[int, object]]:
+    parts = _NUM_RE.split(value)
+    key: list[tuple[int, object]] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.lower()))
+    return key
 
 
 def _subtitles_filter(subs_path: str, font_size: int, font_file: str = "") -> str:
@@ -42,7 +58,7 @@ def _validate_ordered_paths(paths: Iterable[str], order: str, seed: int | None =
         raise ValueError("order must be either 'alphabetical' or 'random'")
 
     if order_key == "alphabetical":
-        items.sort(key=lambda p: Path(p).name.lower())
+        items.sort(key=lambda p: _natural_key(Path(p).name))
     else:
         rnd = random.Random(seed)
         rnd.shuffle(items)
@@ -239,6 +255,7 @@ def build_slideshow_from_images(
     order: str = "alphabetical",
     seed: int | None = None,
     image_duration: float = 5.0,
+    image_durations: Optional[List[float]] = None,
     burn: bool = True,
     soft: bool = False,
     font_size: int = 28,
@@ -255,30 +272,39 @@ def build_slideshow_from_images(
 
     require_ffmpeg()
 
-    if image_duration <= 0:
+    if image_durations is not None and len(image_durations) != len(image_paths):
+        raise ValueError("image_durations must match the number of images")
+    if image_durations is None and image_duration <= 0:
         raise ValueError("image_duration must be positive")
 
     ordered = _validate_ordered_paths(image_paths, order, seed=seed)
+    base_durations = (
+        image_durations if image_durations is not None else [image_duration] * len(ordered)
+    )
+    for dur in base_durations:
+        if dur <= 0:
+            raise ValueError("Image durations must be positive")
 
     adur = ffprobe_duration(audio_path)
     logger.info(
-        "Building slideshow with %d images (order=%s, duration=%.2fs)",
+        "Building slideshow with %d images (order=%s)",
         len(ordered),
         order,
-        image_duration,
     )
     total = 0.0
-    seq: list[str] = []
+    seq: list[tuple[str, float]] = []
     idx = 0
     safety = adur + 1.0
     while total < safety:
-        seq.append(ordered[idx % len(ordered)])
-        total += image_duration
+        base_idx = idx % len(ordered)
+        dur = base_durations[base_idx]
+        seq.append((ordered[base_idx], dur))
+        total += dur
         idx += 1
 
     cmd = ["ffmpeg", "-loglevel", ffmpeg_log_level(), "-y"]
-    for path in seq:
-        cmd += ["-loop", "1", "-t", f"{image_duration:.3f}", "-i", path]
+    for path, dur in seq:
+        cmd += ["-loop", "1", "-t", f"{dur:.3f}", "-i", path]
     cmd += ["-i", audio_path]
 
     audio_idx = len(seq)
