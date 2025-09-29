@@ -2,7 +2,8 @@
 model = "Systran/faster-whisper-large-v3"
 device = "auto"
 compute_type = "float32"
-language = "ne"
+language = "auto"
+clean_audio = true
 vad_filter = true
 beam_size = 8
 # Leave best_of unset to rely on beam search
@@ -21,3 +22,4 @@ chunk_length = 30
 burn = "force"
 font_size = 40
 font_file = ""
+subtitle_language = "und"

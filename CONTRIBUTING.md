@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving Nepali Narration Video! To get started:
+Thanks for your interest in improving VideoMaker! To get started:
 
 1. **Set up the environment**
    ```bash

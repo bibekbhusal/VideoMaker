@@ -12,14 +12,14 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for older Python
 
 
 _DEFAULT_FILENAMES = (
-    "nepali_video.toml",
-    ".nepali_video.toml",
+    "videomaker.toml",
+    ".videomaker.toml",
 )
 
 
 def _candidate_paths() -> "list[pathlib.Path]":
     paths: list[pathlib.Path] = []
-    env_path = os.environ.get("NEPALI_VIDEO_CONFIG")
+    env_path = os.environ.get("VIDEOMAKER_CONFIG")
     if env_path:
         paths.append(pathlib.Path(env_path).expanduser())
 
@@ -63,4 +63,3 @@ def get_default(command: str, option: str, fallback: Any) -> Any:
     """Return config value if present; otherwise use provided fallback."""
 
     return command_defaults(command).get(option, fallback)
-

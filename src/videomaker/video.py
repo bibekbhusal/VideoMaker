@@ -56,6 +56,7 @@ def build_video_playlist(
     soft: bool = False,
     font_size: int = 28,
     font_file: str = "",
+    subtitle_language: str = "und",
     width: int = 1920,
     height: int = 1080,
     fps: int = 30,
@@ -129,7 +130,12 @@ def build_video_playlist(
     ]
 
     if soft:
-        output_opts += ["-c:s", "mov_text", "-metadata:s:s:0", "language=nep"]
+        output_opts += [
+            "-c:s",
+            "mov_text",
+            "-metadata:s:s:0",
+            f"language={subtitle_language}",
+        ]
 
     output_opts += ["-shortest", out_path]
 
@@ -146,7 +152,8 @@ def loop_and_build_video(
     burn: bool = True,
     soft: bool = False,
     font_size: int = 28,
-    font_file: str = ""
+    font_file: str = "",
+    subtitle_language: str = "und",
 ):
     """
     Loops the village clip to match audio length, muxes audio, and either burns or embeds subtitles.
@@ -196,7 +203,12 @@ def loop_and_build_video(
     ]
 
     if soft:
-        base += ["-c:s", "mov_text", "-metadata:s:s:0", "language=nep"]
+        base += [
+            "-c:s",
+            "mov_text",
+            "-metadata:s:s:0",
+            f"language={subtitle_language}",
+        ]
 
     base += [
         "-shortest",
@@ -221,6 +233,7 @@ def build_slideshow_from_images(
     soft: bool = False,
     font_size: int = 28,
     font_file: str = "",
+    subtitle_language: str = "und",
     width: int = 1920,
     height: int = 1080,
     fps: int = 30,
@@ -291,7 +304,12 @@ def build_slideshow_from_images(
     ]
 
     if soft:
-        output_opts += ["-c:s", "mov_text", "-metadata:s:s:0", "language=nep"]
+        output_opts += [
+            "-c:s",
+            "mov_text",
+            "-metadata:s:s:0",
+            f"language={subtitle_language}",
+        ]
 
     output_opts += ["-shortest", out_path]
 

@@ -9,7 +9,7 @@ from rich.table import Table
 
 from .audio import denoise_audio
 from .config import get_default
-from .fonts import ensure_nepali_font
+from .fonts import ensure_default_font
 from .stt import transcribe_to_srt
 from .video import (
     build_slideshow_from_images,
@@ -119,9 +119,9 @@ def transcribe(
         help="int8|int8_float16|float16|float32",
     ),
     language: str = typer.Option(
-        get_default("transcribe", "language", "ne"),
+        get_default("transcribe", "language", "auto"),
         "--language",
-        help="Force language code (e.g., ne for Nepali)",
+        help="Whisper language hint (use 'auto' for automatic detection)",
     ),
     vad_filter: bool = typer.Option(
         get_default("transcribe", "vad_filter", True),
@@ -208,8 +208,20 @@ def transcribe(
         "--no-speech-threshold",
         help="Silence probability threshold",
     ),
+    clean_audio: bool = typer.Option(
+        get_default("transcribe", "clean_audio", True),
+        "--clean-audio/--no-clean-audio",
+        help="Run RNNoise noise suppression before transcription",
+    ),
+    rnnoise_model: Optional[pathlib.Path] = typer.Option(
+        None,
+        "--rnnoise-model",
+        help="Optional custom RNNoise model used for noise suppression",
+        exists=True,
+        readable=True,
+    ),
 ):
-    """Transcribe Nepali narration to SRT subtitles."""
+    """Transcribe narration audio to SRT subtitles."""
 
     audio_path = _resolve_existing(
         audio,
@@ -226,31 +238,52 @@ def transcribe(
     else:
         out_path = audio_path.with_suffix(".srt")
 
-    srt_path, rtf = transcribe_to_srt(
-        audio_path=str(audio_path),
-        out_srt=str(out_path),
-        model_name=model,
-        device=device,
-        compute_type=compute_type,
-        language=language,
-        vad_filter=vad_filter,
-        beam_size=beam_size,
-        best_of=best_of,
-        temperature=temperature,
-        initial_prompt=initial_prompt,
-        condition_on_previous_text=condition_on_previous_text,
-        word_timestamps=word_timestamps,
-        max_line_words=max_line_words,
-        max_line_duration=max_line_duration,
-        max_gap=max_gap,
-        min_line_words=min_line_words,
-        cpu_threads=cpu_threads,
-        num_workers=num_workers,
-        chunk_length=chunk_length,
-        compression_ratio_threshold=compression_ratio_threshold,
-        log_prob_threshold=log_prob_threshold,
-        no_speech_threshold=no_speech_threshold,
-    )
+    narration_path = audio_path
+    cleanup_audio = False
+    if clean_audio:
+        model_path = str(rnnoise_model) if rnnoise_model else None
+        try:
+            cleaned_path = denoise_audio(str(audio_path), model_path=model_path)
+        except FileNotFoundError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        narration_path = pathlib.Path(cleaned_path)
+        cleanup_audio = True
+
+    language_arg = None
+    if language:
+        lang_value = language.strip()
+        if lang_value and lang_value.lower() != "auto":
+            language_arg = lang_value
+
+    try:
+        srt_path, rtf = transcribe_to_srt(
+            audio_path=str(narration_path),
+            out_srt=str(out_path),
+            model_name=model,
+            device=device,
+            compute_type=compute_type,
+            language=language_arg,
+            vad_filter=vad_filter,
+            beam_size=beam_size,
+            best_of=best_of,
+            temperature=temperature,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=condition_on_previous_text,
+            word_timestamps=word_timestamps,
+            max_line_words=max_line_words,
+            max_line_duration=max_line_duration,
+            max_gap=max_gap,
+            min_line_words=min_line_words,
+            cpu_threads=cpu_threads,
+            num_workers=num_workers,
+            chunk_length=chunk_length,
+            compression_ratio_threshold=compression_ratio_threshold,
+            log_prob_threshold=log_prob_threshold,
+            no_speech_threshold=no_speech_threshold,
+        )
+    finally:
+        if cleanup_audio:
+            narration_path.unlink(missing_ok=True)
 
     table = Table(title="Transcription complete", show_header=False, box=box.SIMPLE)
     table.add_row("SRT file", str(srt_path))
@@ -307,6 +340,12 @@ def build_video(
         str(get_default("build_video", "burn", "force")),
         "--burn",
         help="Subtitle mode: force (burn-in) or soft (embedded track)",
+        show_default=True,
+    ),
+    subtitle_language: str = typer.Option(
+        str(get_default("build_video", "subtitle_language", "und")),
+        "--subtitle-language",
+        help="ISO 639-2 language code stored on subtitle tracks",
         show_default=True,
     ),
     font_size: int = typer.Option(
@@ -385,6 +424,8 @@ def build_video(
     burn_subtitles = mode == "force"
     soft_subtitles = mode == "soft"
 
+    subtitle_language = subtitle_language.strip().lower() or "und"
+
     configured_out = get_default("build_video", "out", "")
     if out is not None:
         out_path = out
@@ -410,9 +451,13 @@ def build_video(
 
     if burn_subtitles and font_path is None:
         try:
-            font_path = ensure_nepali_font()
+            font_path = ensure_default_font()
         except Exception as exc:  # pragma: no cover - network failures
-            typer.secho(f"Failed to download Nepali font: {exc}", err=True, fg=typer.colors.RED)
+            typer.secho(
+                f"Failed to download default subtitle font: {exc}",
+                err=True,
+                fg=typer.colors.RED,
+            )
             font_path = None
 
     narration_path = str(audio_path)
@@ -442,6 +487,7 @@ def build_video(
                     soft=soft_subtitles,
                     font_size=font_size,
                     font_file=str(font_path) if font_path else "",
+                    subtitle_language=subtitle_language,
                 )
             except ValueError as exc:
                 raise typer.BadParameter(str(exc)) from exc
@@ -458,6 +504,7 @@ def build_video(
                         soft=soft_subtitles,
                         font_size=font_size,
                         font_file=font_arg,
+                        subtitle_language=subtitle_language,
                     )
                 else:
                     final = build_video_playlist(
@@ -469,6 +516,7 @@ def build_video(
                         soft=soft_subtitles,
                         font_size=font_size,
                         font_file=font_arg,
+                        subtitle_language=subtitle_language,
                     )
             except ValueError as exc:
                 raise typer.BadParameter(str(exc)) from exc

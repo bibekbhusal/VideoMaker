@@ -1,10 +1,10 @@
 [project]
-name = "nepali-narration-video"
+name = "videomaker"
 version = "0.1.0"
-description = "Create Nepali narration videos from audio + stock clip with auto subtitles (SRT)."
+description = "Create narrated videos from audio + media directories with automatic subtitles."
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [{name="Nepali Video Maintainers", email="maintainers@example.com"}]
+authors = [{name="VideoMaker Maintainers", email="maintainers@example.com"}]
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-nepali-video = "nepali_video.cli:app"
+videomaker = "videomaker.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

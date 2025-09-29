@@ -1,12 +1,12 @@
-# Nepali Narration Video Toolkit
+# VideoMaker CLI
 
-CLI helpers for turning a narrated Nepali audio track into a finished video with subtitles. The toolkit keeps the workflow local: transcribe with faster‑whisper, clean the narration, loop footage or images to match the runtime, and burn (or embed) Nepali subtitles with a bundled Devanagari font.
+CLI helpers for turning a narrated audio track (Nepali, Hindi, English, …) into a finished video with subtitles. The toolkit keeps the workflow local: transcribe with faster‑whisper, clean the narration, loop footage or images to match the runtime, and burn (or embed) subtitles with a bundled Devanagari-friendly font.
 
 ## Features
-- **Accurate Nepali transcription** via `faster-whisper`, producing cleaned SRT subtitle files.
+- **Multilingual transcription** via `faster-whisper`, with auto language detection or explicit hints, producing cleaned SRT subtitle files.
 - **Automatic audio denoising** using FFmpeg’s RNNoise (`arnndn`) filter – enabled by default with a one-time model download.
 - **Video builder** that loops clips from a directory or creates slideshows from still images (alphabetical or random order) to cover the narration.
-- **Subtitle handling** with a single `--burn` switch: `force` hard-burns text using a Mukta font (downloaded automatically), while `soft` embeds a toggleable subtitle track.
+- **Subtitle handling** with a single `--burn` switch: `force` hard-burns text using a Mukta font (downloaded automatically), while `soft` embeds a toggleable subtitle track with custom language tags.
 - **Smart path resolution** – relative audio paths are resolved against `audio/` (and `audios/` for legacy folders), while clip/image directories fall back to `media/` (or `clips/`) if not found beside the CLI.
 
 ## Installation
@@ -40,7 +40,7 @@ project/
 │   ├── clips/          # mp4/mov clips for looping
 │   └── slides/         # jpg/png stills for slideshows
 ├── subs/               # optional subtitle exports
-└── nepali_video.toml   # optional defaults
+└── videomaker.toml   # optional defaults
 ```
 
 The CLI automatically searches `audio/` (and `audios/`) for audio files and `media/` (plus `media/*` folders, then `clips/`) for media directories when you pass a relative path.
@@ -50,13 +50,13 @@ The CLI automatically searches `audio/` (and `audios/`) for audio files and `med
 ### Transcribe
 
 ```bash
-nepali-video transcribe \
+videomaker transcribe \
   --audio Saas.m4a \
   --language ne \
   --model Systran/faster-whisper-large-v3
 ```
 
-This writes `Saas.srt` next to the audio (override with `--out`). Useful switches:
+This writes `Saas.srt` next to the audio (override with `--out`). Audio is denoised with RNNoise by default—disable with `--no-clean-audio`. Useful switches:
 
 - `--vad/--no-vad` – enable voice activity detection (default on).
 - `--condition-on-previous-text` – reuse the previously decoded text to keep context across segments.
@@ -67,7 +67,7 @@ This writes `Saas.srt` next to the audio (override with `--out`). Useful switche
 Loop a directory of clips:
 
 ```bash
-nepali-video build-video \
+videomaker build-video \
   --audio Saas.m4a \
   --subs Saas.srt \
   --clips-dir clips/Saas \
@@ -77,7 +77,7 @@ nepali-video build-video \
 Or drive a slideshow from still images:
 
 ```bash
-nepali-video build-video \
+videomaker build-video \
   --audio Saas.m4a \
   --subs Saas.srt \
   --images-dir slides/Saas \
@@ -91,16 +91,18 @@ Key flags:
 - `--burn {force|soft}` – choose hard-burned subtitles or an embedded track (`soft`).
 - `--font-size 40` – adjust the rendered subtitle size (Mukta font downloads automatically when first needed).
 - `--clean-audio/--no-clean-audio` – keep RNNoise on by default or skip it.
+- `--subtitle-language` – set the ISO 639-2 code used for embedded subtitle tracks (e.g., `nep`, `hin`).
 - `--image-order` (`alphabetical`/`random`) & `--image-seed` – control slideshow sequencing.
 
-## Configuration (`nepali_video.toml`)
+## Configuration (`videomaker.toml`)
 
-You can store defaults in `nepali_video.toml` at the project root. Example:
+You can store defaults in `videomaker.toml` at the project root. Example:
 
 ```toml
 [transcribe]
 model = "Systran/faster-whisper-large-v3"
-language = "ne"
+language = "auto"
+clean_audio = true
 vad_filter = true
 beam_size = 8
 word_timestamps = true
@@ -114,6 +116,7 @@ chunk_length = 30
 
 [build_video]
 burn = "force"
+subtitle_language = "und"
 font_size = 40
 font_file = ""
 ```

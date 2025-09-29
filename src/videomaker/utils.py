@@ -38,7 +38,7 @@ def cache_dir() -> Path:
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    target = base / "nepali_video"
+    target = base / "videomaker"
     target.mkdir(parents=True, exist_ok=True)
     return target
 
