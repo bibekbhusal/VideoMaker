@@ -9,6 +9,7 @@ CLI helpers for turning a narrated audio track (Nepali, Hindi, English, …) int
 - **Subtitle handling** with a single `--burn` switch: `force` hard-burns text using a Mukta font (downloaded automatically), while `soft` embeds a toggleable subtitle track with custom language tags.
 - **Smart path resolution** – relative audio paths are resolved against `audio/` (and `audios/` for legacy folders), while clip/image directories fall back to `media/` (or `clips/`) if not found beside the CLI.
 - **Structured logging** – unified `--log-level` control plus FFmpeg log propagation for easier debugging.
+- **Prompt templates** – editable text files (see `prompts/initial_prompt.txt`) to keep Whisper grounded in your desired style.
 
 ## Installation
 ```bash
@@ -56,10 +57,11 @@ The CLI automatically searches `audio/` (and `audios/`) for audio files and `med
 videomaker transcribe \
   --audio Saas.m4a \
   --language ne \
-  --model Systran/faster-whisper-large-v3
+  --model Systran/faster-whisper-large-v3 \
+  --initial-prompt-file prompts/initial_prompt.txt
 ```
 
-This writes `Saas.srt` next to the audio (override with `--out`). Audio is denoised with RNNoise by default—disable with `--no-clean-audio`. Useful switches:
+This writes `Saas.srt` next to the audio (override with `--out`). Audio is denoised with RNNoise by default—disable with `--no-clean-audio`. The bundled prompt lives at `prompts/initial_prompt.txt`; edit it or pass `--initial-prompt` for ad-hoc overrides. Useful switches:
 
 - `--vad/--no-vad` – enable voice activity detection (default on).
 - `--condition-on-previous-text` – reuse the previously decoded text to keep context across segments.
@@ -95,6 +97,8 @@ Key flags:
 - `--font-size 40` – adjust the rendered subtitle size (Mukta font downloads automatically when first needed).
 - `--clean-audio/--no-clean-audio` – keep RNNoise on by default or skip it.
 - `--subtitle-language` – set the ISO 639-2 code used for embedded subtitle tracks (e.g., `nep`, `hin`).
+- `--initial-prompt` / `--initial-prompt-file` – steer decoding with a reusable text template.
+- `--temperature` – tweak decoder creativity (defaults to 0.2).
 - `--image-order` (`alphabetical`/`random`) & `--image-seed` – control slideshow sequencing.
 - `--log-level` – change runtime logging (DEBUG, INFO, WARN, …).
 
@@ -103,6 +107,12 @@ Key flags:
 - Leave `--vad` enabled for most workflows; it helps drop long silences.
 - If quieter speech is being skipped, lower `--vad-threshold` (e.g., `0.3`) and/or reduce the silence requirement with `--vad-min-silence-ms 200`.
 - You can disable VAD altogether (`--no-vad`) if your audio is clean and already trimmed.
+
+### Temperature tuning
+
+- Temperature controls how adventurous Whisper’s decoder is: `0.0` is fully greedy, higher values sample alternative wordings.
+- For Nepali (and most Indic languages) a small non-zero value such as `0.2` helps the model reconsider uncertain segments without straying far.
+- Increase towards `0.4`–`0.5` only if the decoder gets stuck or repeats words; lower it again if transcripts become inconsistent.
 
 ## Configuration (`videomaker.toml`)
 
@@ -115,6 +125,7 @@ log_level = "WARN"
 [transcribe]
 model = "Systran/faster-whisper-large-v3"
 language = "auto"
+temperature = 0.2
 clean_audio = true
 vad_filter = true
 vad_threshold = 0.35
@@ -128,6 +139,7 @@ max_gap = 0.8
 cpu_threads = 8
 num_workers = 4
 chunk_length = 30
+initial_prompt_file = "prompts/initial_prompt.txt"
 
 [build_video]
 burn = "force"
@@ -143,6 +155,7 @@ Leave entries out to stick with CLI defaults. The `burn` value maps directly to 
 - **`--condition-on-previous-text`** feeds the last decoded text back into Whisper for the next chunk. Enable it if your narration has long pauses but consistent context.
 - **Noise model caching:** the RNNoise `.rnnn` model downloads into your cache folder on first use; pass `--rnnoise-model` to supply a custom model path.
 - **Font overrides:** use `--font-file /path/to/font.ttf` to burn subtitles with a specific typeface.
+- **Alternate ASR models:** If `Systran/faster-whisper-large-v3` struggles with Nepali speech, try [sarvamai/indic-whisper](https://huggingface.co/sarvamai/indic-whisper) (CT2 export available) or the Hindi-focussed [GauravSharma/indic-whisper-medium-hi](https://huggingface.co/GauravSharma/indic-whisper-medium-hi). Swap the `--model` argument; both models cover Nepali/Hindi phonetics and can outperform general Whisper on low-resource accents.
 
 ## Changelog
 

@@ -204,7 +204,7 @@ def transcribe(
         help="Sampling candidates when beam-size=1",
     ),
     temperature: float = typer.Option(
-        get_default("transcribe", "temperature", 0.0),
+        get_default("transcribe", "temperature", 0.2),
         "--temperature",
         help="Sampling temperature (0 = greedy)",
     ),
@@ -212,6 +212,19 @@ def transcribe(
         get_default("transcribe", "initial_prompt", None),
         "--initial-prompt",
         help="Optional initial prompt to steer transcription",
+    ),
+    initial_prompt_file: Optional[pathlib.Path] = typer.Option(
+        (
+            pathlib.Path(get_default("transcribe", "initial_prompt_file", ""))
+            if get_default("transcribe", "initial_prompt_file", "")
+            else None
+        ),
+        "--initial-prompt-file",
+        help="Path to a text file containing the initial prompt",
+        exists=True,
+        readable=True,
+        file_okay=True,
+        dir_okay=False,
     ),
     condition_on_previous_text: bool = typer.Option(
         get_default("transcribe", "condition_on_previous_text", False),
@@ -331,6 +344,20 @@ def transcribe(
     else:
         logger.info("Language auto-detection enabled")
 
+    prompt_text = initial_prompt.strip() if initial_prompt else None
+    if prompt_text:
+        logger.info("Using inline initial prompt (%d chars)", len(prompt_text))
+    elif initial_prompt_file:
+        try:
+            prompt_text = initial_prompt_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:  # pragma: no cover - file issues
+            raise typer.BadParameter(f"Failed to read prompt file: {exc}") from exc
+        logger.info(
+            "Loaded initial prompt from %s (%d chars)",
+            initial_prompt_file,
+            len(prompt_text),
+        )
+
     if vad_filter:
         if vad_threshold is not None:
             logger.info("VAD threshold set to %.3f", vad_threshold)
@@ -357,7 +384,7 @@ def transcribe(
             beam_size=beam_size,
             best_of=best_of,
             temperature=temperature,
-            initial_prompt=initial_prompt,
+            initial_prompt=prompt_text,
             condition_on_previous_text=condition_on_previous_text,
             word_timestamps=word_timestamps,
             max_line_words=max_line_words,

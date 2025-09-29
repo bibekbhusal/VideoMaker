@@ -6,6 +6,7 @@
 - Switched to auto language detection by default and exposed ISO language options for both transcription and subtitle tracks.
 - Introduced `--subtitle-language` so embedded subtitles carry accurate metadata across languages.
 - Added centralized logging configuration (`--log-level`) and FFmpeg log-level integration for consistent checkpoint output.
+- Externalised the Whisper initial prompt to `prompts/initial_prompt.txt`, added `--initial-prompt-file`, and updated default temperature guidance (0.2).
 
 ## 2025-09-28
 - Added automatic slideshow builder for image directories with alphabetical or random ordering.
